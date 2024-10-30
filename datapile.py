@@ -121,7 +121,7 @@ class FastPMPile(L.LightningDataModule):
         )
 
     def val_dataloader(self):
-        val_dataset = LoadRawDataset(csv_file=self.hparams.train_csv_file, augment=self.hparams.augment)
+        val_dataset = LoadRawDataset(csv_file=self.hparams.train_csv_file, augment=False)
         pin_memory = torch.cuda.is_available()
         return DataLoader(
             val_dataset,
@@ -134,7 +134,7 @@ class FastPMPile(L.LightningDataModule):
         )
     
     def test_dataloader(self):
-        test_dataset = LoadRawDataset(csv_file=self.hparams.train_csv_file, augment=self.hparams.augment)
+        test_dataset = LoadRawDataset(csv_file=self.hparams.train_csv_file, augment=False)
         pin_memory = torch.cuda.is_available()
         return DataLoader(
             test_dataset,
