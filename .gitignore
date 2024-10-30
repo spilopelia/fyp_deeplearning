@@ -1,0 +1,6 @@
+__pycache__
+checkpoints
+logs
+wandb
+mlsimdata_npy
+d3mbestmodel.pt
