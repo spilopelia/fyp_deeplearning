@@ -19,6 +19,12 @@ def load_config(config_file):
 def parse_args():
     parser = argparse.ArgumentParser(description="Trainer with YAML configuration and WandB integration")
     parser.add_argument('--config', type=str, required=True, help='Path to the YAML config file')
+    
+    # Adding new arguments
+    parser.add_argument('--gpus', type=int, help='Specify the GPU number to use (default: 0)')
+    parser.add_argument('--num_nodes', type=int, help='Specify the GPU number to use (default: 0)')
+    parser.add_argument('--num_workers', type=int, help='Specify the number of workers (default: 1)')
+    
     return parser.parse_args()
 
 # Main function to run the training
@@ -26,6 +32,16 @@ def main():
     # Parse command line arguments
     args = parse_args()
     config = load_config(args.config)
+
+    if args.num_workers is not None:
+        config['data']['num_workers'] = args.num_workers  # Update the workers count in the config
+
+    if args.gpus is not None:
+        config['trainer']['gpus'] = args.gpus  # Update the GPU count in the config
+
+    if args.num_nodes is not None:
+        config['trainer']['num_nodes'] = args.num_nodes  # Update the number of nodes in the config
+
     config_file_name = os.path.basename(args.config)  # Get the file name
     config_file_name = os.path.splitext(config_file_name)[0]  # Remove the extension
     model = Lpt2NbodyNetLightning(**config['model'])
@@ -37,7 +53,7 @@ def main():
     gpus = config['trainer']['gpus'] if torch.cuda.is_available() else None
     max_epochs = config['trainer']['max_epochs']
     num_nodes = config['trainer']['num_nodes']
-    
+
     # Initialize WandB logger
     wandb_logger = WandbLogger(
         project=config['wandb']['project'],

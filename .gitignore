@@ -1,6 +1,8 @@
 __pycache__
 checkpoints
+checkpoints_old
 logs
 wandb
 mlsimdata_npy
 d3mbestmodel.pt
+data_collection

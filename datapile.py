@@ -115,9 +115,9 @@ class FastPMPile(L.LightningDataModule):
             shuffle=True,
             batch_size=self.batch_size,
             num_workers=self.hparams.num_workers,
-            persistent_workers=True,
+            #persistent_workers=True,
             drop_last=True,
-            pin_memory=pin_memory,
+            #pin_memory=pin_memory,
         )
 
     def val_dataloader(self):
@@ -128,9 +128,9 @@ class FastPMPile(L.LightningDataModule):
             shuffle=False, 
             batch_size=self.batch_size,
             drop_last=False,  
-            pin_memory=pin_memory,
+            #pin_memory=pin_memory,
             num_workers=self.hparams.num_workers,
-            persistent_workers=True,
+            #persistent_workers=True,
         )
     
     def test_dataloader(self):
@@ -141,7 +141,7 @@ class FastPMPile(L.LightningDataModule):
             shuffle=False,  
             batch_size=self.batch_size,
             drop_last=False,  
-            pin_memory=pin_memory,
+            #pin_memory=pin_memory,
             num_workers=self.hparams.num_workers,
-            persistent_workers=True,
+            #persistent_workers=True,
         )
