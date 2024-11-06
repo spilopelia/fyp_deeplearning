@@ -1,20 +1,20 @@
 model:
-  learning_rate: 1.0e-4
+  lr: 1.0e-3
   weight_decay: 1.0e-4
   optimizer: 'AdamW' # ['Adam', 'AdamW']
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
-  #lr_warmup: 1000
-  #lr_cosine_period: 24000 #match dataset_size/batch_size*max_epochs
-  custom: True
-  num_layers: 2
+  lr_warmup: 1000
+  lr_cosine_period: 24000 #match dataset_size/batch_size*max_epochs
+  custom: False
+  num_layers: 4
   base_filters: 64
-  blocks_per_layer: 3
+  blocks_per_layer: 2
 
 data:
   train_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata1-8.csv'
   val_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata19.csv'
   test_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata20.csv'
-  batch_size: 64
+  batch_size: 128
   num_workers: 16
   augment: True
 
