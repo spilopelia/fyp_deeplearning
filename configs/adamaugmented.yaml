@@ -19,7 +19,7 @@ data:
   augment: True
 
 trainer:
-  max_epochs: 800
+  max_epochs: 1000
   gpus: 4
   num_nodes: 1
   ckpt_path: "/home/user/ckwan1/ml/checkpoints/adamaugmented/last.ckpt"

@@ -13,7 +13,7 @@ data:
   augment: False
 
 trainer:
-  max_epochs: 700
+  max_epochs: 1000
   gpus: 4
   num_nodes: 1
   ckpt_path: '/home/user/ckwan1/ml/checkpoints/notaugment/last.ckpt'
