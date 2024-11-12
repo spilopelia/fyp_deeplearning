@@ -19,10 +19,12 @@ data:
   augment: True
 
 trainer:
-  max_epochs: 500
+  max_epochs: 700
   gpus: 4
   num_nodes: 1
-
+  ckpt_path: "/home/user/ckwan1/ml/checkpoints/1e-3/last.ckpt"
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
+  id: "f5e64zam"
+  resume: "must"

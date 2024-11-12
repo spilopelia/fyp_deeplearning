@@ -8,7 +8,7 @@ model:
   custom: True
   num_layers: 2
   base_filters: 64
-  blocks_per_layer: 3
+  blocks_per_layer: 4
 
 data:
   train_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata1-8.csv'
@@ -22,10 +22,7 @@ trainer:
   max_epochs: 700
   gpus: 4
   num_nodes: 1
-  ckpt_path: '/home/user/ckwan1/ml/checkpoints/3layer3block/last.ckpt'
   
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  id: "224ebxse"
-  resume: "must"

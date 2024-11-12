@@ -29,6 +29,7 @@ def parse_args():
 
 # Main function to run the training
 def main():
+
     # Parse command line arguments
     args = parse_args()
     config = load_config(args.config)
@@ -53,13 +54,15 @@ def main():
     gpus = config['trainer']['gpus'] if torch.cuda.is_available() else None
     max_epochs = config['trainer']['max_epochs']
     num_nodes = config['trainer']['num_nodes']
-
+    ckpt_path = config['trainer'].get('ckpt_path', None)
     # Initialize WandB logger
     wandb_logger = WandbLogger(
         project=config['wandb']['project'],
         entity=config['wandb'].get('entity', None),
         log_model=config['wandb'].get('log_model', False),
-        save_dir=config['wandb'].get('save_dir', './wandb_logs')  # Optional save directory
+        save_dir=config['wandb'].get('save_dir', './wandb_logs'),  # Optional save directory
+        id=config['wandb'].get('id', None),
+        resume=config['wandb'].get('resume', None),
     )
     # Get the current WandB run ID
     # Create a checkpoint directory using the WandB run ID
@@ -91,11 +94,11 @@ def main():
         num_nodes=num_nodes,
         strategy=strategy,
         callbacks=[checkpoint_callback, sliceplot_callback],
-        log_every_n_steps=10
+        log_every_n_steps=10,
     )
 
     # Train the model
-    trainer.fit(model, datamodule=data_module)
+    trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
 
     # Optionally test the model
     # trainer.test(datamodule=data_module)
