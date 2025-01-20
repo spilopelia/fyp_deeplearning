@@ -1,6 +1,6 @@
 import torch
 import lightning.pytorch as pl
-from datapile import FastPMPile
+from datapile import FastPMPile, HuggingfaceLoader
 from model import Lpt2NbodyNetLightning
 import yaml
 import argparse
@@ -48,8 +48,8 @@ def main():
     model = Lpt2NbodyNetLightning(**config['model'])
 
     # Extract data parameters from the config
-    data_module = FastPMPile(**config['data'])
-
+    # data_module = FastPMPile(**config['data'])
+    data_module = HuggingfaceLoader(**config['data']) # faster data pile
     # Extract trainer parameters from the config
     gpus = config['trainer']['gpus'] if torch.cuda.is_available() else None
     max_epochs = config['trainer']['max_epochs']
@@ -66,7 +66,7 @@ def main():
     )
     # Get the current WandB run ID
     # Create a checkpoint directory using the WandB run ID
-    checkpoint_dir = os.path.join('checkpoints', config_file_name)
+    checkpoint_dir = os.path.join('new_checkpoints', config_file_name)
 
     # Ensure the directory exists
     os.makedirs(checkpoint_dir, exist_ok=True)

@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-gpu=16
 #SBATCH --mem=100G
-#SBATCH --output=logs2/d3m-%j.log
+#SBATCH --output=logs3/d3m-%j.log
 #SBATCH --time=3-00:00:00
 #SBATCH -J "d3m"
 

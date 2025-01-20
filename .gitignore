@@ -7,3 +7,7 @@ wandb
 mlsimdata_npy
 d3mbestmodel.pt
 data_collection
+huggingface_dataset
+file_path_csv
+logs3
+new_checkpoints

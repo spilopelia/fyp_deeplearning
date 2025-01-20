@@ -3,29 +3,23 @@ model:
   weight_decay: 1.0e-4
   optimizer: 'AdamW' # ['Adam', 'AdamW']
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
-  #lr_warmup: 1000
-  #lr_cosine_period: 24000 #match dataset_size/batch_size*max_epochs
-  custom: True
-  num_layers: 3
-  base_filters: 64
-  blocks_per_layer: 2
 
 data:
-  train_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata1-8.csv'
+  train_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata1-18.csv'
   val_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata19.csv'
   test_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata20.csv'
-  batch_size: 64
+  batch_size: 128
   num_workers: 16
-  augment: True
+  augment: False
 
 trainer:
-  max_epochs: 700
+  max_epochs: 1000
   gpus: 4
   num_nodes: 1
-  ckpt_path: '/home/user/ckwan1/ml/checkpoints/4layer/last.ckpt'
+  ckpt_path: '/home/user/ckwan1/ml/checkpoints/tripledatanotaugment/last.ckpt'
   
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  id: "uipvltzz"
+  id: "vh7o11ew"
   resume: "must"

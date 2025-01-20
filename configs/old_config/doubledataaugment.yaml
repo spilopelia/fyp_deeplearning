@@ -1,0 +1,25 @@
+model:
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  optimizer: 'AdamW' # ['Adam', 'AdamW']
+  lr_scheduler: 'Constant' # ['Constant', 'Cosine']
+
+data:
+  train_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata1-18.csv'
+  val_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata19.csv'
+  test_csv_file: '/home/user/ckwan1/ml/file_path_csv/mlsimdata20.csv'
+  batch_size: 128
+  num_workers: 16
+  augment: True
+
+trainer:
+  max_epochs: 1000
+  gpus: 4
+  num_nodes: 1
+  ckpt_path: '/home/user/ckwan1/ml/checkpoints/doubledataaugment/last.ckpt'
+  
+wandb:
+  project: "fyp"
+  entity: "brianwan221-the-chinese-university-of-hong-kong"
+  id: "757u6jz3"
+  resume: "must"

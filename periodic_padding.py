@@ -35,7 +35,7 @@ def compute_index_from_pad_region(region_code, dim_shape, dim_pad):
 	return original_lower, original_upper, out_lower, out_upper
 
 def periodic_padding_3d(x, pad):
-	ndim = 3
+	ndim = 4
 	m = torch.nn.ConstantPad3d(pad,0)
 	out = m(x)
 	for i in range(1, 3**ndim):
