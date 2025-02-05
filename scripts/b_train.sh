@@ -13,6 +13,7 @@
 
 
 export OMP_NUM_THREADS=${SLURM_CPUS_ON_NODE}
+export TORCH_HOME=/tmp/torch_cache
 
 # enable logging    
 export CUDA_LAUNCH_BLOCKING=1.

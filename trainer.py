@@ -63,6 +63,7 @@ def main():
         save_dir=config['wandb'].get('save_dir', './wandb_logs'),  # Optional save directory
         id=config['wandb'].get('id', None),
         resume=config['wandb'].get('resume', None),
+        name=config['wandb'].get('name', None),
     )
     # Get the current WandB run ID
     # Create a checkpoint directory using the WandB run ID
