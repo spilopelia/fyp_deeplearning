@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import lightning.pytorch as pl
 from periodic_padding import periodic_padding_3d
-
+from lag2eul import lag2eul
 
 def crop_tensor(x):
 	x = x.narrow(2,1,x.shape[2]-3).narrow(3,1,x.shape[3]-3).narrow(4,1,x.shape[4]-3).contiguous()
@@ -151,6 +151,9 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 blocks_per_layer: int = 2, 
                 init_dim: int = 3,
                 reversed: bool = False,
+                eul_loss: bool = False,
+                eul_loss_scale: float = 1.0,
+                lag_loss_scale: float = 3.0,
                 **kwargs
                 ):
         super(Lpt2NbodyNetLightning, self).__init__()
@@ -172,7 +175,13 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         else:
             y, x = batch            
         y_hat = self(x)
-        train_loss = self.criterion(y_hat, y)
+        lag_loss = self.criterion(y_hat, y)
+        if self.hparams.eul_loss == True:
+            eul_y_hat, eul_y = lag2eul([y_hat, y])
+            eul_loss = self.criterion(eul_y_hat, eul_y)
+            train_loss = lag_loss*self.hparams.lag_loss_scale + eul_loss*self.hparams.eul_loss_scale
+        else:
+            train_loss = lag_loss
         
         # Log the batch loss separately
         self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True)
@@ -194,8 +203,13 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         else:
             y, x = batch   
         y_hat = self(x)
-        val_loss = self.criterion(y_hat, y)
-        
+        lag_loss = self.criterion(y_hat, y)
+        if self.hparams.eul_loss == True:
+            eul_y_hat, eul_y = lag2eul([y_hat, y])
+            eul_loss = self.criterion(eul_y_hat, eul_y)
+            val_loss = lag_loss*self.hparams.lag_loss_scale + eul_loss*self.hparams.eul_loss_scale
+        else:
+            val_loss = lag_loss        
         # Log the batch loss separately
         self.log('val_batch_loss', val_loss, on_step=True, on_epoch=False, logger=True)
         
