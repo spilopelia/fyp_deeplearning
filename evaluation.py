@@ -160,6 +160,7 @@ class SlicePlotCallback(pl.Callback):
             #self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=0, slice_index=16)
             #self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=1, slice_index=16)
             self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=2, slice_index=16)
+            
     def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         """
         This method is called at the end of every validation batch.

@@ -189,6 +189,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         # Log the epoch loss separately
         self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
 
+        self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
+        self.log('train_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
         optimizer = self.optimizers()
 
         # Access the learning rate from the optimizer's parameter groups
@@ -215,6 +219,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         
         # Log the epoch loss separately
         self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
+        self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
+        self.log('val_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
 
         return y_hat
     
