@@ -97,7 +97,7 @@ class FastPMPile(L.LightningDataModule):
         batch_size: int = 512,
         num_workers: int = 10,
         augment: bool = False,
-        **kwargs
+        **kwargs,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=['kwargs'])
@@ -228,6 +228,7 @@ class HuggingfaceLoader(L.LightningDataModule):  # use to load huggingface datas
         num_workers: int = 10,
         augment: bool = True,
         density: bool = True,
+        **kwargs,
     ) -> None:
         """The `HuggingfaceLoader` class defines a LightningDataModule for
         timeseries dataset of the GOES Xray one minute average data.
@@ -297,4 +298,95 @@ class HuggingfaceLoader(L.LightningDataModule):  # use to load huggingface datas
             shuffle=False,
             drop_last=True,
             num_workers=self.hparams.num_workers,
+        )
+    
+class AugmentedDataset_iter(torch.utils.data.IterableDataset):
+    def __init__(self, dataset, augment=False, density=True):
+        super().__init__()
+        self.dataset = dataset
+        self.augment = augment
+        self.density = density
+
+    def process_sample(self, dset):
+        displacement = dset['displacement']
+        displacement = np.einsum('ijkl->lijk', displacement)
+
+        if self.density:
+            density = dset['density']
+            LPT = np.vstack((displacement[6:9], np.expand_dims(density[2], axis=0))).astype(np.float32)
+            Nbody = np.vstack((displacement[0:3], np.expand_dims(density[0], axis=0))).astype(np.float32)
+        else:
+            LPT = displacement[6:9].astype(np.float32)
+            Nbody = displacement[0:3].astype(np.float32)
+
+        if self.augment:
+            if np.random.rand() < 0.5:
+                LPT = LPT[:, ::-1, ...]
+                LPT[0] = -LPT[0]
+                Nbody = Nbody[:, ::-1, ...]
+                Nbody[0] = -Nbody[0]
+            if np.random.rand() < 0.5:
+                LPT = LPT[:, :, ::-1, ...]
+                LPT[1] = -LPT[1]
+                Nbody = Nbody[:, :, ::-1, ...]
+                Nbody[1] = -Nbody[1]
+            if np.random.rand() < 0.5:
+                LPT = LPT[:, :, :, ::-1]
+                LPT[2] = -LPT[2]
+                Nbody = Nbody[:, :, :, ::-1]
+                Nbody[2] = -Nbody[2]
+
+        return torch.from_numpy(LPT.copy()), torch.from_numpy(Nbody.copy())
+
+    def __iter__(self):
+        for sample in self.dataset:
+            yield self.process_sample(sample)
+
+class HuggingfaceLoader_iter(L.LightningDataModule):
+    def __init__(
+        self,
+        dataset_path: str,
+        test_size: float = 0.1,
+        batch_size: int = 512,
+        num_workers: int = 10,
+        augment: bool = True,
+        density: bool = True,
+        **kwargs,
+    ) -> None:
+        super().__init__()
+        self.save_hyperparameters()
+
+    def setup(self, stage):
+        self.is_distributed = dist.is_available() and dist.is_initialized()
+        if self.is_distributed:
+            self.batch_size = self.hparams.batch_size // dist.get_world_size()
+        else:
+            self.batch_size = self.hparams.batch_size
+
+        # Load dataset as IterableDataset
+        dataset = datasets.load_from_disk(self.hparams.dataset_path)
+
+        # Manually split train/val since train_test_split() isn't supported in IterableDataset
+        dataset = dataset.shuffle(buffer_size=10_000)  # Optional: Shuffle before splitting
+        train_size = 1 - self.hparams.test_size
+        train_iter, val_iter = dataset.train_test_split(train_size=train_size).values()
+
+        self.train_dataset = AugmentedDataset(train_iter, augment=self.hparams.augment, density=self.hparams.density)
+        self.val_dataset = AugmentedDataset(val_iter, augment=False, density=self.hparams.density)
+
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.hparams.num_workers,
+            drop_last=True,
+            pin_memory=True,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.hparams.num_workers,
+            drop_last=True,
         )

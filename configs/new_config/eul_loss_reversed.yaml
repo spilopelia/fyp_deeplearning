@@ -11,6 +11,10 @@ model:
   blocks_per_layer: 2 # number of convolutional blocks in each layer
   init_dim: 3 # 3 for without density field in tensor
   reversed: True # if True, predict ZA from FastPM
+  eul_loss: True # if True, use Eulerian loss
+  eul_loss_scale: 1.0 # scale factor for Eulerian loss
+  lag_loss_scale: 3.0 # scale factor for Lagrangian loss
+
 data:
   dataset_path: '/home/user/ckwan1/ml/huggingface_dataset'
   batch_size: 128
@@ -26,4 +30,4 @@ trainer:
 wandb:
   project: "fastpm2za"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "fastpm2za"
+  name: "fastpm2za_with_eul_loss"

@@ -1,6 +1,6 @@
 import torch
 import lightning.pytorch as pl
-from datapile import FastPMPile, HuggingfaceLoader
+from datapile import FastPMPile, HuggingfaceLoader, HuggingfaceLoader_iter
 from model import Lpt2NbodyNetLightning
 import yaml
 import argparse
@@ -49,7 +49,13 @@ def main():
 
     # Extract data parameters from the config
     # data_module = FastPMPile(**config['data'])
-    data_module = HuggingfaceLoader(**config['data']) # faster data pile
+    dataset_type = config['data']['dataset_type']
+    if dataset_type == 'raw':
+        data_module = FastPMPile(**config['data'])
+    elif dataset_type == 'huggingface':
+        data_module = HuggingfaceLoader(**config['data']) # faster data pile
+    elif dataset_type == 'huggingface_iter':
+        data_module = HuggingfaceLoader_iter(**config['data']) # for large dataset
     # Extract trainer parameters from the config
     gpus = config['trainer']['gpus'] if torch.cuda.is_available() else None
     max_epochs = config['trainer']['max_epochs']

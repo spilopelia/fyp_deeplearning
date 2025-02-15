@@ -10,20 +10,26 @@ model:
   base_filters: 64 # base filter after first convolutional layer
   blocks_per_layer: 2 # number of convolutional blocks in each layer
   init_dim: 3 # 3 for without density field in tensor
-  reversed: True # if True, predict ZA from FastPM
+  reversed: False # if True, predict ZA from FastPM
+  eul_loss: False # if True, use Eulerian loss
+  eul_loss_scale: 1.0 # scale factor for Eulerian loss
+  lag_loss_scale: 3.0 # scale factor for Lagrangian loss
+
 data:
-  dataset_path: '/home/user/ckwan1/ml/huggingface_dataset'
-  batch_size: 128
-  num_workers: 16
+  dataset_type: 'raw' # ['raw', 'huggingface']
+  train_csv_file: '/home/user/ckwan1/ml/128train.csv'
+  val_csv_file: '/home/user/ckwan1/ml/128val.csv'
+  batch_size: 48
+  num_workers: 4
   augment: True # if True, use data augmentation
   density: False # if True, use density field in tensor
 
 trainer:
-  max_epochs: 1000
+  max_epochs: 500
   gpus: 4
   num_nodes: 1
 
 wandb:
-  project: "fastpm2za"
+  project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "fastpm2za"
+  name: "default_128"

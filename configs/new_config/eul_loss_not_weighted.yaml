@@ -5,7 +5,7 @@ model:
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
   #lr_warmup: 1000 # needed if use cosine lr_scheduler
   #lr_cosine_period: 24000 # match dataset_size/batch_size*max_epochs
-  custom: True # if False, use default model in d3m
+  model: 'UNet' # ['default', 'UNet', 'VAE']
   num_layers: 4 # layer number of UNet
   base_filters: 64 # base filter after first convolutional layer
   blocks_per_layer: 2 # number of convolutional blocks in each layer

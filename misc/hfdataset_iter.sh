@@ -10,4 +10,4 @@
 
 conda activate d3m
 cd $SLURM_SUBMIT_DIR
-srun python /home/user/ckwan1/ml/misc/hfdataset.py 
+srun python /home/user/ckwan1/ml/misc/hfdataset_iter.py 

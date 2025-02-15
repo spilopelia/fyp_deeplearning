@@ -68,7 +68,7 @@ class Lpt2NbodyNet(nn.Module):
         return x
     
 class UNet3D(nn.Module):  
-    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2,init_dim=4):
+    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2,init_dim=3):
         super(UNet3D, self).__init__()
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
@@ -134,6 +134,89 @@ class UNet3D(nn.Module):
         x = self.final_conv(x)
         return x
 
+import torch
+import torch.nn as nn
+
+class VAE3D(nn.Module):
+    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2, 
+                 init_dim=3, latent_channels=32):
+        super(VAE3D, self).__init__()
+        self.encoders = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        
+        # Encoder path
+        init_channels = init_dim
+        out_channels = base_filters
+        self.init_conv = self._make_layer(block, init_channels, out_channels, 
+                                        blocks=blocks_per_layer, stride=1)
+        for _ in range(num_layers):
+            self.encoders.append(self._make_layer(block, out_channels, out_channels*2, 
+                                                blocks=1, stride=2))
+            self.encoders.append(self._make_layer(block, out_channels*2, out_channels*2, 
+                                                blocks=blocks_per_layer, stride=1))
+            out_channels *= 2
+
+        # Variational bottleneck
+        self.conv_mu = nn.Conv3d(out_channels, latent_channels, kernel_size=1)
+        self.conv_logvar = nn.Conv3d(out_channels, latent_channels, kernel_size=1)
+        self.conv_decode = nn.Conv3d(latent_channels, out_channels, kernel_size=1)
+
+        # Decoder path (no skip connections)
+        for _ in range(num_layers):
+            self.decoders.append(nn.ConvTranspose3d(out_channels, out_channels//2, 
+                                                  kernel_size=3, stride=2, padding=0))
+            self.decoders.append(self._make_layer(block, out_channels//2, out_channels//2,
+                                                blocks=blocks_per_layer, stride=1))
+            out_channels //= 2
+
+        self.final_conv = nn.Conv3d(out_channels, init_dim, kernel_size=1)
+
+        # BatchNorm and activation layers
+        self.batch_norms = nn.ModuleList()
+        self.relu = nn.ReLU(inplace=True)
+        for i in range(num_layers):
+            self.batch_norms.insert(0, nn.BatchNorm3d(base_filters * (2 ** i)))
+
+    def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
+        layers = []
+        for _ in range(blocks):
+            layers.append(block(inplanes, outplanes, stride=stride))
+            inplanes = outplanes
+        return nn.Sequential(*layers)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x):
+        # Encoder
+        x = self.init_conv(x)
+        for i in range(0, len(self.encoders), 2):
+            x = self.encoders[i](x)
+            x = self.encoders[i+1](x)
+
+        # Variational bottleneck
+        mu = self.conv_mu(x)
+        logvar = self.conv_logvar(x)
+        z = self.reparameterize(mu, logvar)
+        x = self.conv_decode(z)
+
+        # Decoder
+        for i in range(0, len(self.decoders), 2):
+            x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))  # Your custom padding
+            x = self.decoders[i](x)  # Transposed convolution
+            x = crop_tensor(x)  # Your custom cropping
+            
+            # Apply BatchNorm and ReLU
+            x = self.batch_norms[i//2](x)
+            x = self.relu(x)
+            
+            x = self.decoders[i+1](x)  # Regular convolution block
+
+        x = self.final_conv(x)
+        return x, mu, logvar
+    
 # LightningModule wrapping the Lpt2NbodyNet
 class Lpt2NbodyNetLightning(pl.LightningModule):
     def __init__(self, 
@@ -145,11 +228,12 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 lr_scheduler: str = 'Constant',
                 lr_warmup: int = 1000,
                 lr_cosine_period: int = 24000,
-                custom: bool = False,
+                model: str = 'default',
                 num_layers: int = 4, 
                 base_filters: int = 64, 
                 blocks_per_layer: int = 2, 
                 init_dim: int = 3,
+                latent_channels: int = 32,
                 reversed: bool = False,
                 eul_loss: bool = False,
                 eul_loss_scale: float = 1.0,
@@ -160,10 +244,14 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
         self.save_hyperparameters(ignore=['kwargs'])  # This will save all init args except kwargs
 
-        if not custom:
+        if model == "default":
             self.model = Lpt2NbodyNet(BasicBlock,init_dim=self.hparams.init_dim)
-        else:
-            self.model = UNet3D(block=BasicBlock,num_layers=self.hparams.num_layers,base_filters=self.hparams.base_filters,blocks_per_layer=self.hparams.blocks_per_layer,init_dim=self.hparams.init_dim)
+        elif model == "UNet":
+            self.model = UNet3D(block=BasicBlock,num_layers=self.hparams.num_layers,
+                                base_filters=self.hparams.base_filters,blocks_per_layer=self.hparams.blocks_per_layer,init_dim=self.hparams.init_dim)
+        elif model == "VAE":
+            self.model = VAE3D(block=BasicBlock, num_layers=self.hparams.num_layers, base_filters=self.hparams.base_filters, 
+            blocks_per_layer=self.hparams.blocks_per_layer, init_dim=self.hparams.init_dim, latent_channels=self.hparams.latent_channels)
         self.criterion = nn.MSELoss()  
 
     def forward(self, x):
@@ -180,18 +268,24 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             eul_y_hat, eul_y = lag2eul([y_hat, y])
             eul_loss = self.criterion(eul_y_hat, eul_y)
             train_loss = lag_loss*self.hparams.lag_loss_scale + eul_loss*self.hparams.eul_loss_scale
+            # Log the batch loss separately
+            self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True)
+            
+            # Log the epoch loss separately
+            self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
+            self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
+            self.log('train_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
         else:
             train_loss = lag_loss
         
-        # Log the batch loss separately
-        self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True)
-        
-        # Log the epoch loss separately
-        self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
-
-        self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
-
-        self.log('train_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+            # Log the batch loss separately
+            self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True)
+            
+            # Log the epoch loss separately
+            self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
 
         optimizer = self.optimizers()
 
@@ -212,17 +306,22 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             eul_y_hat, eul_y = lag2eul([y_hat, y])
             eul_loss = self.criterion(eul_y_hat, eul_y)
             val_loss = lag_loss*self.hparams.lag_loss_scale + eul_loss*self.hparams.eul_loss_scale
+            # Log the batch loss separately
+            self.log('val_batch_loss', val_loss, on_step=True, on_epoch=False, logger=True)
+            
+            # Log the epoch loss separately
+            self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
+            self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+
+            self.log('val_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
         else:
             val_loss = lag_loss        
-        # Log the batch loss separately
-        self.log('val_batch_loss', val_loss, on_step=True, on_epoch=False, logger=True)
-        
-        # Log the epoch loss separately
-        self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
-
-        self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
-
-        self.log('val_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+            # Log the batch loss separately
+            self.log('val_batch_loss', val_loss, on_step=True, on_epoch=False, logger=True)
+            
+            # Log the epoch loss separately
+            self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
 
         return y_hat
     
