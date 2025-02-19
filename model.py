@@ -11,7 +11,29 @@ def crop_tensor(x):
 
 def conv3x3(inplane,outplane, stride=1,padding=0):
 	return nn.Conv3d(inplane,outplane,kernel_size=3,stride=stride,padding=padding,bias=True)
-    
+
+import torch
+
+def cyclical_annealing(step, steps_per_cycle, ratio=0.5):
+    """
+    Calculate the KL weight using a cyclical annealing schedule.
+
+    Args:
+        step (int): Current training step.
+        steps_per_cycle (int): Number of steps in one complete cycle.
+        ratio (float): Proportion of the cycle used for increasing the KL weight.
+
+    Returns:
+        torch.Tensor: KL weight (beta) for the current step.
+    """
+    cycle_position = step % steps_per_cycle
+    cycle_progress = cycle_position / steps_per_cycle
+
+    if cycle_progress < ratio:
+        return 0.5 * (1 - torch.cos(torch.tensor(cycle_progress / ratio * torch.pi)))
+    else:
+        return torch.tensor(1.0)
+
 # Assuming conv3x3 and BasicBlock are defined as in your original code.
 class BasicBlock(nn.Module):
 	def __init__(self,inplane,outplane,stride = 1):
@@ -91,10 +113,10 @@ class UNet3D(nn.Module):
         self.final_conv = nn.ConvTranspose3d(out_channels, init_dim, 1, stride=1, padding=0)
 
         # Predefine BatchNorm3d and ReLU layers for each decoder step
-        self.batch_norms = nn.ModuleList()
-        self.relu = nn.ReLU(inplace=True)
-        for i in range(num_layers):
-            self.batch_norms.insert(0, nn.BatchNorm3d(base_filters * (2 ** i)))  # Adjust channels accordingly
+        #self.batch_norms = nn.ModuleList()
+        #self.relu = nn.ReLU(inplace=True)
+        #for i in range(num_layers):
+        #    self.batch_norms.insert(0, nn.BatchNorm3d(base_filters * (2 ** i)))  # Adjust channels accordingly
 
     def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
         layers = []
@@ -122,8 +144,8 @@ class UNet3D(nn.Module):
             x = crop_tensor(x)  # Assuming this is a custom function to crop the tensor
             
             # Use the pre-defined BatchNorm3d and ReLU layers
-            x = self.batch_norms[i // 2](x)  # BatchNorm
-            x = nn.ReLU(inplace=True)(x)  # ReLU
+            #x = self.batch_norms[i // 2](x)  # BatchNorm
+            #x = nn.ReLU(inplace=True)(x)  # ReLU
             
             # Skip connection with encoder outputs
             x = torch.cat((x, encoder_outputs[len(encoder_outputs)-2-i//2]), dim=1)  # Skip connection
@@ -139,7 +161,7 @@ import torch.nn as nn
 
 class VAE3D(nn.Module):
     def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2, 
-                 init_dim=3, latent_channels=32):
+                 init_dim=3, latent_dim=32):
         super(VAE3D, self).__init__()
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
@@ -157,9 +179,9 @@ class VAE3D(nn.Module):
             out_channels *= 2
 
         # Variational bottleneck
-        self.conv_mu = nn.Conv3d(out_channels, latent_channels, kernel_size=1)
-        self.conv_logvar = nn.Conv3d(out_channels, latent_channels, kernel_size=1)
-        self.conv_decode = nn.Conv3d(latent_channels, out_channels, kernel_size=1)
+        self.conv_mu = nn.Conv3d(out_channels, latent_dim, kernel_size=1)
+        self.conv_logvar = nn.Conv3d(out_channels, latent_dim, kernel_size=1)
+        self.conv_decode = nn.Conv3d(latent_dim, out_channels, kernel_size=1)
 
         # Decoder path (no skip connections)
         for _ in range(num_layers):
@@ -170,12 +192,6 @@ class VAE3D(nn.Module):
             out_channels //= 2
 
         self.final_conv = nn.Conv3d(out_channels, init_dim, kernel_size=1)
-
-        # BatchNorm and activation layers
-        self.batch_norms = nn.ModuleList()
-        self.relu = nn.ReLU(inplace=True)
-        for i in range(num_layers):
-            self.batch_norms.insert(0, nn.BatchNorm3d(base_filters * (2 ** i)))
 
     def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
         layers = []
@@ -207,11 +223,95 @@ class VAE3D(nn.Module):
             x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))  # Your custom padding
             x = self.decoders[i](x)  # Transposed convolution
             x = crop_tensor(x)  # Your custom cropping
-            
-            # Apply BatchNorm and ReLU
-            x = self.batch_norms[i//2](x)
-            x = self.relu(x)
-            
+            x = self.decoders[i+1](x)  # Regular convolution block
+
+        x = self.final_conv(x)
+        return x, mu, logvar
+
+class VAE3DFlat(nn.Module):
+    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2, 
+                 init_dim=3, latent_dim=32):
+        super(VAE3DFlat, self).__init__()
+        self.encoders = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+        
+        self.latent_dim = latent_dim
+        # Encoder path
+        init_channels = init_dim
+        out_channels = base_filters
+        self.init_conv = self._make_layer(block, init_channels, out_channels, 
+                                        blocks=blocks_per_layer, stride=1)
+        for _ in range(num_layers):
+            self.encoders.append(self._make_layer(block, out_channels, out_channels*2, 
+                                                blocks=1, stride=2))
+            self.encoders.append(self._make_layer(block, out_channels*2, out_channels*2, 
+                                                blocks=blocks_per_layer, stride=1))
+            out_channels *= 2
+
+        # Latent space layers (will be initialized in the first forward pass)
+        self.fc_mu = None
+        self.fc_logvar = None
+        self.fc_decode = None
+        self.final_spatial_dims = None  # To store the final spatial dimensions
+
+        # Decoder path
+        for _ in range(num_layers):
+            self.decoders.append(nn.ConvTranspose3d(out_channels, out_channels//2, 
+                                                  kernel_size=3, stride=2, padding=0))
+            self.decoders.append(self._make_layer(block, out_channels//2, out_channels//2,
+                                                blocks=blocks_per_layer, stride=1))
+            out_channels //= 2
+
+        self.final_conv = nn.Conv3d(out_channels, init_dim, kernel_size=1)
+
+    def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
+        layers = []
+        for _ in range(blocks):
+            layers.append(block(inplanes, outplanes, stride=stride))
+            inplanes = outplanes
+        return nn.Sequential(*layers)
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, x):
+        # Encoder
+        x = self.init_conv(x)
+        for i in range(0, len(self.encoders), 2):
+            x = self.encoders[i](x)
+            x = self.encoders[i+1](x)
+
+        # Dynamically initialize fc_mu, fc_logvar, and fc_decode if not already initialized
+        if self.fc_mu is None:
+            # Calculate the flattened size based on the final tensor shape
+            batch_size, out_channels, depth, height, width = x.shape
+            flattened_size = out_channels * depth * height * width
+
+            # Initialize the fully connected layers
+            self.fc_mu = nn.Linear(flattened_size, self.latent_dim).to(x.device)
+            self.fc_logvar = nn.Linear(flattened_size, self.latent_dim).to(x.device)
+            self.fc_decode = nn.Linear(self.latent_dim, flattened_size).to(x.device)
+
+            # Store the final spatial dimensions for reshaping in the decoder
+            self.final_spatial_dims = (depth, height, width)
+
+        # Flatten and map to latent space
+        x_flat = x.view(x.size(0), -1)  # Flatten the tensor
+        mu = self.fc_mu(x_flat)
+        logvar = self.fc_logvar(x_flat)
+        z = self.reparameterize(mu, logvar)
+
+        # Decode the latent vector
+        x = self.fc_decode(z)
+        x = x.view(x.size(0), -1, *self.final_spatial_dims)  # Reshape to 3D feature map
+
+        # Decoder
+        for i in range(0, len(self.decoders), 2):
+            x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))  # Custom padding
+            x = self.decoders[i](x)  # Transposed convolution
+            x = crop_tensor(x)  # Custom cropping
             x = self.decoders[i+1](x)  # Regular convolution block
 
         x = self.final_conv(x)
@@ -233,16 +333,24 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 base_filters: int = 64, 
                 blocks_per_layer: int = 2, 
                 init_dim: int = 3,
-                latent_channels: int = 32,
+                latent_dim: int = 32,
                 reversed: bool = False,
+                normalized: bool = False,
+                normalized_scale: float = 128.0,
                 eul_loss: bool = False,
+                kl_loss: bool = True,
+                kl_loss_annealing: bool = True,
+                steps_per_cycle: int = 1000,
+                kl_ratio: float = 0.5,
                 eul_loss_scale: float = 1.0,
                 lag_loss_scale: float = 3.0,
+                kl_loss_scale: float = 1.0,
                 **kwargs
                 ):
         super(Lpt2NbodyNetLightning, self).__init__()
 
         self.save_hyperparameters(ignore=['kwargs'])  # This will save all init args except kwargs
+        self.model_type = model
 
         if model == "default":
             self.model = Lpt2NbodyNet(BasicBlock,init_dim=self.hparams.init_dim)
@@ -251,91 +359,172 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                                 base_filters=self.hparams.base_filters,blocks_per_layer=self.hparams.blocks_per_layer,init_dim=self.hparams.init_dim)
         elif model == "VAE":
             self.model = VAE3D(block=BasicBlock, num_layers=self.hparams.num_layers, base_filters=self.hparams.base_filters, 
-            blocks_per_layer=self.hparams.blocks_per_layer, init_dim=self.hparams.init_dim, latent_channels=self.hparams.latent_channels)
+            blocks_per_layer=self.hparams.blocks_per_layer, init_dim=self.hparams.init_dim, latent_dim=self.hparams.latent_dim)
+        elif model == "VAEFlat":
+            self.model = VAE3DFlat(block=BasicBlock, num_layers=self.hparams.num_layers, base_filters=self.hparams.base_filters, 
+            blocks_per_layer=self.hparams.blocks_per_layer, init_dim=self.hparams.init_dim, latent_dim=self.hparams.latent_dim)
         self.criterion = nn.MSELoss()  
 
     def forward(self, x):
         return self.model(x)
 
+    def normalize(self, x, scale):
+        return x / scale
+    
+    def denormalize(self, x, scale):
+        return x * scale
+    
     def training_step(self, batch, batch_idx):
-        if not self.hparams.reversed:
-            x, y = batch
+        # Reverse batch if needed
+        x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
+
+        if self.hparams.normalized:
+            x = self.normalize(x, self.hparams.normalized_scale)
+            y = self.normalize(y, self.hparams.normalized_scale)
+
+        # Forward pass
+        if self.model_type in ["VAE", "VAEFlat"]:
+            y_hat, mu, logvar = self(x)
         else:
-            y, x = batch            
-        y_hat = self(x)
+            y_hat = self(x)
+            
+        # Base lagrangian loss
         lag_loss = self.criterion(y_hat, y)
-        if self.hparams.eul_loss == True:
+        train_loss = lag_loss
+
+        # Flags for loss conditions
+        eul_enabled = self.hparams.eul_loss
+        kl_enabled = (self.model_type in ["VAE", "VAEFlat"]) and self.hparams.kl_loss
+
+        # Apply lagrangian scaling if either auxiliary loss is active
+        if eul_enabled or kl_enabled:
+            train_loss = lag_loss * self.hparams.lag_loss_scale
+
+        # Euler loss component
+        if eul_enabled:
             eul_y_hat, eul_y = lag2eul([y_hat, y])
             eul_loss = self.criterion(eul_y_hat, eul_y)
-            train_loss = lag_loss*self.hparams.lag_loss_scale + eul_loss*self.hparams.eul_loss_scale
-            # Log the batch loss separately
-            self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True)
-            
-            # Log the epoch loss separately
-            self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+            train_loss += eul_loss * self.hparams.eul_loss_scale
 
-            self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+        # KL divergence component
+        if kl_enabled:
+            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+            kl_weight = 1.0
+            if self.hparams.kl_loss_annealing:
+                # Calculate current training step
+                current_step = self.global_step
 
-            self.log('train_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+                # Define steps per cycle
+                steps_per_cycle = self.hparams.steps_per_cycle
 
-        else:
-            train_loss = lag_loss
+                # Compute KL weight using cyclical annealing
+                kl_weight = cyclical_annealing(current_step, steps_per_cycle,
+                                               ratio=self.hparams.kl_ratio).to(self.device)
+                self.log('kl_weight', kl_weight, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            # Apply the annealed KL weight
+            train_loss += kl_loss * kl_weight * self.hparams.kl_loss_scale
+
+        # Logging
+        self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+        self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+        self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
         
-            # Log the batch loss separately
-            self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True)
-            
-            # Log the epoch loss separately
-            self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
-
-        optimizer = self.optimizers()
-
-        # Access the learning rate from the optimizer's parameter groups
-        lr = optimizer.param_groups[0]['lr']
-        self.log('learning_rate', lr, on_step=True, on_epoch=False, logger=True)
+        if eul_enabled:
+            self.log('train_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+        
+        if kl_enabled:
+            self.log('train_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
         return train_loss
 
     def validation_step(self, batch, batch_idx):
-        if not self.hparams.reversed:
-            x, y = batch
+        # Reverse batch if needed
+        x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
+
+        if self.hparams.normalized:
+            x = self.normalize(x, self.hparams.normalized_scale)
+            y = self.normalize(y, self.hparams.normalized_scale)
+        # Forward pass
+        if self.model_type in ["VAE", "VAEFlat"]:
+            y_hat, mu, logvar = self(x)
         else:
-            y, x = batch   
-        y_hat = self(x)
+            y_hat = self(x)
+            
+        # Base lagrangian loss
         lag_loss = self.criterion(y_hat, y)
-        if self.hparams.eul_loss == True:
+        val_loss = lag_loss
+
+        # Flags for loss conditions
+        eul_enabled = self.hparams.eul_loss
+        kl_enabled = (self.model_type in ["VAE", "VAEFlat"]) and self.hparams.kl_loss
+
+        # Apply lagrangian scaling if either auxiliary loss is active
+        if eul_enabled or kl_enabled:
+            val_loss = lag_loss * self.hparams.lag_loss_scale
+
+        # Euler loss component
+        if eul_enabled:
             eul_y_hat, eul_y = lag2eul([y_hat, y])
             eul_loss = self.criterion(eul_y_hat, eul_y)
-            val_loss = lag_loss*self.hparams.lag_loss_scale + eul_loss*self.hparams.eul_loss_scale
-            # Log the batch loss separately
-            self.log('val_batch_loss', val_loss, on_step=True, on_epoch=False, logger=True)
-            
-            # Log the epoch loss separately
-            self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+            val_loss += eul_loss * self.hparams.eul_loss_scale
 
-            self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+        # KL divergence component
+        if kl_enabled:
+            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+            val_loss += kl_loss * self.hparams.kl_loss_scale
 
-            self.log('val_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
-        else:
-            val_loss = lag_loss        
-            # Log the batch loss separately
-            self.log('val_batch_loss', val_loss, on_step=True, on_epoch=False, logger=True)
-            
-            # Log the epoch loss separately
-            self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+        # Logging
+        self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+        self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+        
+        if eul_enabled:
+            self.log('val_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+        
+        if kl_enabled:
+            self.log('val_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
+        if self.hparams.normalized:
+            y_hat = self.denormalize(y_hat, self.hparams.normalized_scale)
         return y_hat
     
     def test_step(self, batch, batch_idx):
-        x, y = batch
-        y_hat = self(x)
-        test_loss = self.criterion(y_hat, y)
-        
-        # Log the batch loss separately
-        self.log('test_batch_loss', test_loss, on_step=True, on_epoch=False, logger=True)
-        
-        # Log the epoch loss separately
-        self.log('test_epoch_loss', test_loss, on_step=False, on_epoch=True, logger=True,sync_dist=True)
+        # Reverse batch if needed
+        x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
+        if self.hparams.normalized:
+            x = self.normalize(x, self.hparams.normalized_scale)
+            y = self.normalize(y, self.hparams.normalized_scale)
+        # Forward pass
+        if self.model_type in ["VAE", "VAEFlat"]:
+            y_hat, mu, logvar = self(x)
+        else:
+            y_hat = self(x)
+            
+        # Base lagrangian loss
+        lag_loss = self.criterion(y_hat, y)
+        test_loss = lag_loss
+
+        # Flags for loss conditions
+        eul_enabled = self.hparams.eul_loss
+        kl_enabled = (self.model_type in ["VAE", "VAEFlat"]) and self.hparams.kl_loss
+
+        # Apply lagrangian scaling if either auxiliary loss is active
+        if eul_enabled or kl_enabled:
+            test_loss = lag_loss * self.hparams.lag_loss_scale
+
+        # Euler loss component
+        if eul_enabled:
+            eul_y_hat, eul_y = lag2eul([y_hat, y])
+            eul_loss = self.criterion(eul_y_hat, eul_y)
+            test_loss += eul_loss * self.hparams.eul_loss_scale
+
+        # KL divergence component
+        if kl_enabled:
+            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+            test_loss += kl_loss * self.hparams.kl_loss_scale
+            
+        if self.hparams.normalized:
+            y_hat = self.denormalize(y_hat, self.hparams.normalized_scale)
         return y_hat
     
     def configure_optimizers(self):

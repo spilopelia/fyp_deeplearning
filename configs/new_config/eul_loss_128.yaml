@@ -19,7 +19,7 @@ data:
   dataset_type: 'raw' # ['raw', 'huggingface']
   train_csv_file: '/home/user/ckwan1/ml/128train.csv'
   val_csv_file: '/home/user/ckwan1/ml/128val.csv'
-  batch_size: 48
+  batch_size: 16
   num_workers: 4
   augment: True # if True, use data augmentation
   density: False # if True, use density field in tensor
