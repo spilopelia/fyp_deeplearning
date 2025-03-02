@@ -10,7 +10,7 @@ model:
   base_filters: 64 # base filter after first convolutional layer
   blocks_per_layer: 2 # number of convolutional blocks in each layer
   init_dim: 3 # 3 for without density field in tensor
-  latent_dim: 512
+  latent_dim: 1024
   reversed: False # if True, predict ZA from FastPM
   normalized: True # if True, scale the input data by the scale factor
   normalized_scale: 128.0 # scale factor for normalization

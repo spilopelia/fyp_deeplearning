@@ -5,34 +5,34 @@ model:
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
   #lr_warmup: 1000 # needed if use cosine lr_scheduler
   #lr_cosine_period: 24000 # match dataset_size/batch_size*max_epochs
-  model: 'UNet' # ['default', 'UNet', 'VAE']
+  model: 'AEwithRes' # ['default', 'UNet', 'VAE']
   num_layers: 4 # layer number of UNet
   base_filters: 64 # base filter after first convolutional layer
   blocks_per_layer: 2 # number of convolutional blocks in each layer
   init_dim: 3 # 3 for without density field in tensor
+  latent_dim: 1024
   reversed: False # if True, predict ZA from FastPM
-  normalized: False
+  normalized: False # if True, scale the input data by the scale factor
+  normalized_scale: 128.0 # scale factor for normalization
   eul_loss: False # if True, use Eulerian loss
   eul_loss_scale: 1.0 # scale factor for Eulerian loss
   lag_loss_scale: 1.0 # scale factor for Lagrangian loss
 
+
 data:
   dataset_type: 'huggingface' # ['raw', 'huggingface']
   dataset_path: '/home/user/ckwan1/ml/huggingface_dataset'
-  batch_size: 256
+  batch_size: 128
   num_workers: 16
   augment: True # if True, use data augmentation
   density: False # if True, use density field in tensor
 
 trainer:
-  max_epochs: 1000
+  max_epochs: 500
   gpus: 4
   num_nodes: 1
-  ckpt_path: "/home/user/ckwan1/ml/new_checkpoints/default/last.ckpt"
 
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "default"
-  id: "28vrjpim"
-  resume: "must"
+  name: "default_aeres_ld1024"

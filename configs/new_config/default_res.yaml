@@ -5,23 +5,16 @@ model:
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
   #lr_warmup: 1000 # needed if use cosine lr_scheduler
   #lr_cosine_period: 24000 # match dataset_size/batch_size*max_epochs
-  model: 'VAE' # ['default', 'UNet', 'VAE']
+  model: 'UNet3DwithRes' # ['default', 'UNet', 'VAE']
   num_layers: 4 # layer number of UNet
   base_filters: 64 # base filter after first convolutional layer
   blocks_per_layer: 2 # number of convolutional blocks in each layer
   init_dim: 3 # 3 for without density field in tensor
-  latent_dim: 512
   reversed: False # if True, predict ZA from FastPM
-  normalized: True # if True, scale the input data by the scale factor
-  normalized_scale: 128.0 # scale factor for normalization
+  normalized: False
   eul_loss: False # if True, use Eulerian loss
   eul_loss_scale: 1.0 # scale factor for Eulerian loss
   lag_loss_scale: 1.0 # scale factor for Lagrangian loss
-  kl_loss: True # if True, use KL loss
-  kl_loss_scale: 1.0 # scale factor for KL loss
-  kl_loss_annealing: True # if True, use KL loss annealing
-  steps_per_cycle: 1000 # steps per cycle for KL loss annealing
-  kl_ratio: 0.5 # ratio of annealing inside a cycle
 
 data:
   dataset_type: 'huggingface' # ['raw', 'huggingface']
@@ -39,4 +32,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "default_vae_normalized_annealed"
+  name: "default_res"

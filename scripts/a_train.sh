@@ -14,7 +14,7 @@
 
 export OMP_NUM_THREADS=${SLURM_CPUS_ON_NODE}
 export TORCH_HOME=/tmp/torch_cache
-
+export NCCL_DEBUG=TRACE
 # enable logging    
 export CUDA_LAUNCH_BLOCKING=1.
 

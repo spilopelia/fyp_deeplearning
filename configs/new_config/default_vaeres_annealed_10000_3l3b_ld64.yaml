@@ -5,14 +5,14 @@ model:
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
   #lr_warmup: 1000 # needed if use cosine lr_scheduler
   #lr_cosine_period: 24000 # match dataset_size/batch_size*max_epochs
-  model: 'VAE' # ['default', 'UNet', 'VAE']
-  num_layers: 4 # layer number of UNet
+  model: 'VAEwithRes' # ['default', 'UNet', 'VAE']
+  num_layers: 3 # layer number of UNet
   base_filters: 64 # base filter after first convolutional layer
-  blocks_per_layer: 2 # number of convolutional blocks in each layer
+  blocks_per_layer: 3 # number of convolutional blocks in each layer
   init_dim: 3 # 3 for without density field in tensor
-  latent_dim: 1024
+  latent_dim: 64
   reversed: False # if True, predict ZA from FastPM
-  normalized: True # if True, scale the input data by the scale factor
+  normalized: False # if True, scale the input data by the scale factor
   normalized_scale: 128.0 # scale factor for normalization
   eul_loss: False # if True, use Eulerian loss
   eul_loss_scale: 1.0 # scale factor for Eulerian loss
@@ -39,4 +39,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "default_vae_normalized_annealed_10000"
+  name: "default_vaeres_annealed_10000_3l3b_ld1024_ld64"
