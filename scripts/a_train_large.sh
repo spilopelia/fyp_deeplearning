@@ -1,6 +1,7 @@
 #!/bin/bash -l
 
 #SBATCH -p a
+#SBATCH --exclude=a2
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=2
 #SBATCH --gres=gpu:2

@@ -15,7 +15,7 @@ class q_u(nn.Module):
                 out_channels=nc_out,
                 growth_rate=64,
                 steps=3,
-                scale_factor=1)
+                scale_factor=2)
         )
 
     def forward(self, input):
@@ -35,7 +35,7 @@ class p_y(nn.Module):
                 out_channels=nc_out,
                 growth_rate=128,
                 steps=4,
-                scale_factor=1)
+                scale_factor=2)
         )
 
     def forward(self, input):
@@ -75,7 +75,7 @@ class p_z(nn.Module):
                 out_channels=nc_out//2,
                 growth_rate=32,
                 steps=5,
-                scale_factor=1),
+                scale_factor=2),
             nn.ELU(inplace=True)
         )
 
@@ -101,7 +101,7 @@ class p_z(nn.Module):
 
     def forward(self, input):
         y, u = input[0], input[1]
-        y_out = self.y_nn(y)
+        y_out = self.y_nn(y)    
         u_out = self.u_nn(u)
         joint = torch.cat((y_out, u_out), 1)
         mu, logvar = self.core_nn(joint).chunk(2, 1)

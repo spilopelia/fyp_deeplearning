@@ -179,50 +179,43 @@ class DenselyNetwork3D(nn.Module):
 class DenselyEncoder3D(nn.Module):
     def __init__(self, in_channels, out_channels, growth_rate, steps, scale_factor, drop_prob=0.0):
         super().__init__()
-        layers = []
-        current_channels = in_channels
-        
-        for _ in range(scale_factor):
-            # Dense layer
-            layers.append(DenseNetLayer3D(current_channels, growth_rate, steps, drop_prob))
-            current_channels += growth_rate * steps
-            
-            # Downsample
-            layers.append(Conv3d(current_channels, current_channels*2,
-                                kernel_size=3, stride=2, padding=1))
-            current_channels *= 2
+        # downscale block
+        net = []
+        for i in range(scale_factor):
+            net.append(DenseNetLayer3D(in_channels, growth_rate, steps, drop_prob=drop_prob))
+            in_channels = in_channels + growth_rate * steps
+            net.append(Downsample3D(in_channels, 2*in_channels, drop_prob=drop_prob))
+            in_channels *= 2
             growth_rate *= 2
 
-        # Final layers
-        layers.append(Conv3d(current_channels, out_channels, kernel_size=1))
-        
-        self.core_nn = nn.Sequential(*layers)
+        # output block
+        net.append(DenseNetLayer3D(in_channels, growth_rate, steps, drop_prob=drop_prob))
+        in_channels = in_channels + growth_rate * steps
+
+        # output layer
+        net.append(Conv3d(in_channels, out_channels, kernel_size=1, stride=1, padding=0, act=None))
+
+        self.core_nn = nn.Sequential(*net)
 
     def forward(self, input):
         return self.core_nn(input)
 
 class DenselyDecoder3D(nn.Module):
-    def __init__(self, in_channels, out_channels, growth_rate, steps, scale_factor, drop_prob=0.0):
+    def __init__(self, in_channels, out_channels, growth_rate=16, steps=3, scale_factor=2, drop_prob=0.0):
         super().__init__()
-        layers = []
-        current_channels = in_channels
-        
-        for _ in range(scale_factor):
-            # Dense layer
-            layers.append(DenseNetLayer3D(current_channels, growth_rate, steps, drop_prob))
-            current_channels += growth_rate * steps
-            
-            # Upsample
-            layers.append(ConvTranspose3d(current_channels, current_channels//2,
-                                        kernel_size=3, stride=2, padding=1,
-                                        output_padding=1))
-            current_channels = current_channels // 2
-            growth_rate = growth_rate // 2
+        # upsample block
+        net = []
+        for i in range(scale_factor):
+            net.append(DenseNetLayer3D(in_channels, growth_rate, steps, drop_prob=drop_prob))
+            in_channels = in_channels + growth_rate * steps
+            net.append(Upsample3D(in_channels, in_channels//2, drop_prob=drop_prob))
+            in_channels = in_channels//2
+            growth_rate = growth_rate//2
 
-        # Final convolution
-        layers.append(Conv3d(current_channels, out_channels, kernel_size=3, padding=1))
-        
-        self.core_nn = nn.Sequential(*layers)
+        # output block
+        net.append(Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, act=None))
+
+        self.core_nn = nn.Sequential(*net)
 
     def forward(self, x):
         return self.core_nn(x)

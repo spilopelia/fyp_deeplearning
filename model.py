@@ -507,11 +507,20 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.model = MagVitVAE3D(n_bands = self.hparams.init_dim, hidden_dims = self.hparams.base_filters, residual_conv_kernel_size = 3,
                                 n_compressions = self.hparams.num_layers, num_consecutive = self.hparams.blocks_per_layer,) 
         elif model == "SRVAE3D":
-            self.model = srVAE3D(x_shape = (3, 32, 32, 32), y_shape = (3, 32, 32, 32), 
-                                u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=self.hparams.srvae_prior)
+            if self.hparams.srvae_prior == 'MixtureOfGaussians':
+                self.model = srVAE3D(x_shape = (3, 32, 32, 32), y_shape = (3, 32, 32, 32), 
+                                u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=MixtureOfGaussians)
+            elif self.hparams.srvae_prior == 'StandardNormal':
+                self.model = srVAE3D(x_shape = (3, 32, 32, 32), y_shape = (3, 32, 32, 32), 
+                            u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=StandardNormal)
+            elif self.hparams.srvae_prior == 'RealNVP':
+                self.model = srVAE3D(x_shape = (3, 32, 32, 32), y_shape = (3, 32, 32, 32), 
+                            u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=RealNVP)                
         self.criterion = nn.MSELoss()  
 
-    def forward(self, x):
+    def forward(self, x, y=None):
+        if y is not None:
+            return self.model(x,y)
         return self.model(x)
 
     #def normalize(self, x, scale):
@@ -532,7 +541,8 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         if self.model_type in VAE_list:
             y_hat, mu, logvar = self(x)
         elif self.model_type == "SRVAE3D":
-            output = self(x)
+            output = self(x,y)
+
             if self.hparams.kl_loss_annealing:
                 # Calculate current training step
                 current_step = self.global_step
@@ -546,15 +556,17 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 kl_weight = self.hparams.kl_loss_scale * kl_weight_ratio
                 self.log('kl_weight', kl_weight, on_step=True, on_epoch=False, logger=True, sync_dist=True)
 
-            loss, diagnostics = srVAE3D.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, kl_weight)
-            self.log('train_batch_loss', diagnostics['nelbo'], on_step=True, on_epoch=False, logger=True, sync_dist=True)
-            self.log('train_epoch_loss', diagnostics['nelbo'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('train_epoch_lag_loss', diagnostics['Re_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('train_epoch_lag_loss_x', diagnostics['Re_x'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('train_epoch_lag_loss_y', diagnostics['Re_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('train_epoch_kl_loss', diagnostics['KL'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('train_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('train_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+                loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, kl_weight)
+            loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, self.hparams.kl_loss_scale)
+
+            self.log('val_batch_loss', diagnostics['nelbo'], on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('val_epoch_loss', diagnostics['nelbo'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_lag_loss', diagnostics['RE_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_lag_loss_x', diagnostics['RE_x'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_lag_loss_y', diagnostics['RE_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_kl_loss', diagnostics['KL'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             return loss
         else:
             y_hat = self(x)
@@ -614,24 +626,27 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         # Reverse batch if needed
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
-        if self.hparams.normalized:
-            x = self.normalize(x, self.hparams.normalized_scale)
-            y = self.normalize(y, self.hparams.normalized_scale)
+        #if self.hparams.normalized:
+        #    x = self.normalize(x, self.hparams.normalized_scale)
+        #    y = self.normalize(y, self.hparams.normalized_scale)
+
         # Forward pass
         if self.model_type in VAE_list:
             y_hat, mu, logvar = self(x)
         elif self.model_type == "SRVAE3D":
-            output = self(x)
-            loss, diagnostics = srVAE3D.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale)
+            output = self(x,y)
+
+            loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, self.hparams.kl_loss_scale)
+
             self.log('val_batch_loss', diagnostics['nelbo'], on_step=True, on_epoch=False, logger=True, sync_dist=True)
             self.log('val_epoch_loss', diagnostics['nelbo'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_lag_loss', diagnostics['Re_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_lag_loss_x', diagnostics['Re_x'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_lag_loss_y', diagnostics['Re_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_lag_loss', diagnostics['RE_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_lag_loss_x', diagnostics['RE_x'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_lag_loss_y', diagnostics['RE_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('val_epoch_kl_loss', diagnostics['KL'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('val_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('val_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            return loss
+            return output.get('y_hat')
         else:
             y_hat = self(x)
             
@@ -669,23 +684,24 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         if kl_enabled:
             self.log('val_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
-        if self.hparams.normalized:
-            y_hat = self.denormalize(y_hat, self.hparams.normalized_scale)
+        #if self.hparams.normalized:
+        #    y_hat = self.denormalize(y_hat, self.hparams.normalized_scale)
+
         return y_hat
     
     def test_step(self, batch, batch_idx):
         # Reverse batch if needed
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
-        if self.hparams.normalized:
-            x = self.normalize(x, self.hparams.normalized_scale)
-            y = self.normalize(y, self.hparams.normalized_scale)
+        #if self.hparams.normalized:
+        #    x = self.normalize(x, self.hparams.normalized_scale)
+        #    y = self.normalize(y, self.hparams.normalized_scale)
         # Forward pass
         if self.model_type in VAE_list:
             y_hat, mu, logvar = self(x)
         elif self.model_type == "SRVAE3D":
-            output = self(x)
-            loss, diagnostics = srVAE3D.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale)
+            output = self(x,y)
+            loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale)
             self.log('test_batch_loss', diagnostics['nelbo'], on_step=True, on_epoch=False, logger=True, sync_dist=True)
             self.log('test_epoch_loss', diagnostics['nelbo'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('test_epoch_lag_loss', diagnostics['Re_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
@@ -694,7 +710,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.log('test_epoch_kl_loss', diagnostics['KL'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('test_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('test_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            return loss
+            return output.get('y_hat')
         else:
             y_hat = self(x)
             
@@ -721,8 +737,9 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
             test_loss += kl_loss * self.hparams.kl_loss_scale
 
-        if self.hparams.normalized:
-            y_hat = self.denormalize(y_hat, self.hparams.normalized_scale)
+        #if self.hparams.normalized:
+        #    y_hat = self.denormalize(y_hat, self.hparams.normalized_scale)
+
         return y_hat
     
     def configure_optimizers(self):

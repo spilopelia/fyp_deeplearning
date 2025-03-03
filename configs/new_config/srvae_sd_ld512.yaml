@@ -5,13 +5,11 @@ model:
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
   #lr_scheduler: 'Cosine'
   #lr_warmup: 1000
-  #num_samples: 30000
-  #batch_size: 128
-  #max_epochs: 500
+  num_samples: 27000 # 30000 * spilt_ratio
   model: 'SRVAE3D' # ['default', 'UNet', 'VAE']
-  srvae_udim: 1024
-  srvae_zdim: 1024
-  srvae_prior: 'MixtureOfGaussians'
+  srvae_udim: 512
+  srvae_zdim: 512
+  srvae_prior: 'StandardNormal'
   reversed: False # if True, predict ZA from FastPM
   lag_loss_scale: 0.5 # scale factor for Lagrangian loss
   recon_loss_scale: 1.0 # scale factor for reconstruction loss
@@ -24,7 +22,7 @@ model:
 data:
   dataset_type: 'huggingface' # ['raw', 'huggingface']
   dataset_path: '/home/user/ckwan1/ml/huggingface_dataset'
-  batch_size: 32
+  batch_size: 64
   num_workers: 16
   augment: True # if True, use data augmentation
   density: False # if True, use density field in tensor
@@ -37,4 +35,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "magvitvae_a10000_3l2b_ld512"
+  name: "srvae_sd"

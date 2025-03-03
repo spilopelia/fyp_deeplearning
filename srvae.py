@@ -43,7 +43,6 @@ class srVAE3D(nn.Module):
 
         self.u_shape = get_shape(u_dim)
         self.z_shape = get_shape(z_dim)
-
         # p(u)
         self.p_u = prior(self.u_shape)
 
@@ -63,7 +62,7 @@ class srVAE3D(nn.Module):
         self.p_x = p_x(self.x_shape, (self.y_shape, self.z_shape))
 
         # likelihood distribution
-        self.recon_loss = nn.MSELoss(reduction='none')
+        self.recon_loss = nn.MSELoss(reduction='mean')
 
     @staticmethod
     def reparameterize(z_mean, z_log_var):
@@ -110,13 +109,12 @@ class srVAE3D(nn.Module):
         return x_hat
 
 
-    def calculate_elbo(self, x, outputs, lag_weight, recon_weight, **kwargs):
+    def calculate_elbo(self, x, outputs, lag_weight, recon_weight, kl_weight, **kwargs):
         # unpack variables
         y, x_hat, y_hat = outputs.get('y'), outputs.get('x_hat'), outputs.get('y_hat')
         u_q, u_q_mean, u_q_logvar = outputs.get('u_q'), outputs.get('u_q_mean'), outputs.get('u_q_logvar')
         z_q, z_q_mean, z_q_logvar = outputs.get('z_q'), outputs.get('z_q_mean'), outputs.get('z_q_logvar')
         z_p_mean, z_p_logvar = outputs.get('z_p_mean'), outputs.get('z_p_logvar')
-
         # Reconstraction loss
         RE_x = self.recon_loss(x, x_hat)
         RE_y = self.recon_loss(y, y_hat)
@@ -125,22 +123,24 @@ class srVAE3D(nn.Module):
         log_p_u = self.p_u.log_p(u_q, dim=1)
         log_q_u = log_normal_diag(u_q, u_q_mean, u_q_logvar)
         KL_u = log_q_u - log_p_u
+        KL_u = KL_u.mean()
 
         log_p_z = log_normal_diag(z_q, z_p_mean, z_p_logvar)
         log_q_z = log_normal_diag(z_q, z_q_mean, z_q_logvar)
         KL_z = log_q_z - log_p_z
+        KL_z = KL_z.mean()
 
         # Total lower bound loss
-        nelbo = - (lag_weight * (RE_x + RE_y + recon_weight * Re_xy ) - KL_u - KL_z).mean()
+        nelbo =  (lag_weight * (RE_x + RE_y + recon_weight * Re_xy ) + kl_weight * (KL_u + KL_z))
 
         diagnostics = {
             "nelbo" : nelbo.item(),
 
-            "RE"    : - (RE_x + RE_y + Re_xy).mean().item(),
+            "RE"    : (RE_x + RE_y + Re_xy).item(),
             "RE_x"  : RE_x.mean().item(),
             "RE_y"  : RE_y.mean().item(),
-            "Re_xy" : Re_xy.mean().item(),
-            "KL"    : (KL_z + KL_u).mean().item(),
+            "RE_xy" : Re_xy.mean().item(),
+            "KL"    : (KL_z + KL_u).item(),
             "KL_u"  : KL_u.mean().item(),
             "KL_z"  : KL_z.mean().item(),
         }
@@ -165,7 +165,6 @@ class srVAE3D(nn.Module):
 
         # z ~ p(z| x)
         z_p_mean, z_p_logvar = self.p_z((y, u_q))
-
         return {
             'u_q_mean'   : u_q_mean,
             'u_q_logvar' : u_q_logvar,
