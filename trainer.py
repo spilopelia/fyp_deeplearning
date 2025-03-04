@@ -62,6 +62,7 @@ def main():
     max_epochs = config['trainer']['max_epochs']
     num_nodes = config['trainer']['num_nodes']
     ckpt_path = config['trainer'].get('ckpt_path', None)
+    gradient_clip_val = config['trainer'].get('gradient_clip_val', 0)
     # Initialize WandB logger
     wandb_logger = WandbLogger(
         project=config['wandb']['project'],
@@ -103,6 +104,7 @@ def main():
         strategy=strategy,
         callbacks=[checkpoint_callback, sliceplot_callback],
         log_every_n_steps=10,
+        gradient_clip_val=gradient_clip_val,
     )
 
     # Train the model

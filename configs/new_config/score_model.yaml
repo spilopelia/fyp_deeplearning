@@ -1,0 +1,46 @@
+model:
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  optimizer: 'AdamW' # ['Adam', 'AdamW']
+  lr_scheduler: 'Constant' # ['Constant', 'Cosine']
+  #lr_scheduler: 'Cosine'
+  #lr_warmup: 1000
+  num_samples: 27000 # 30000 * spilt_ratio
+  model: 'ICdiffusion' # ['default', 'UNet', 'VAE']
+  reversed: False # if True, predict ZA from FastPM
+  diffusion_noise_sigma: 0.1
+  diffusion_sigma_min: 0.01
+  diffusion_sigma_max: 100.0
+  diffusion_sampling_eps: 1.0e-5
+  diffusion_T: 1.0
+  diffusion_num_scales: 1000 # num of steps in reverse diffusion
+  score_act_f: 'swish' # ['elu', 'relu', 'lrelu', 'swish'] activation function in score UNet model
+  score_nf: 32  # base channel in score UNet model
+  score_ch_mult: [1, 2, 2, 1, 1] # channel multiplier in score UNet model
+  score_num_res_blocks: 2  # num of residual blocks in score UNet model
+  score_dropout: 0.1 # dropout rate in score UNet model
+  score_conditional: True # condition on y
+  score_skip_rescale: True 
+  score_init_scale: 0.0
+  score_num_input_channels: 6 # 3 for x and 3 for y
+  score_num_output_channels: 3 # 3 for y
+  score_fourier_scale: 16
+  ema: True
+  ema_rate: 0.999
+data:
+  dataset_type: 'huggingface' # ['raw', 'huggingface']
+  dataset_path: '/home/user/ckwan1/ml/huggingface_dataset'
+  batch_size: 128
+  num_workers: 16
+  augment: True # if True, use data augmentation
+  density: False # if True, use density field in tensor
+
+trainer:
+  max_epochs: 500
+  gpus: 4
+  num_nodes: 1
+
+wandb:
+  project: "fyp"
+  entity: "brianwan221-the-chinese-university-of-hong-kong"
+  name: "score_model"

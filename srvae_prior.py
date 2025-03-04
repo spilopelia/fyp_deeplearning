@@ -231,7 +231,7 @@ def squeeze_2x2x2(x, reverse=False, alt_order=False):
         x = x.permute(0, 4, 1, 2, 3)  # (B, new_channels, D, H, W)
     return x
 
-def checkerboard_mask_3d(depth, height, width, reverse=False, dtype=torch.float32, requires_grad=False):
+def checkerboard_mask_3d(depth, height, width, reverse=False, dtype=torch.float32, device=None, requires_grad=False):
     """Get a 3D checkerboard mask where no two adjacent entries have the same value.
     
     Args:
@@ -250,6 +250,7 @@ def checkerboard_mask_3d(depth, height, width, reverse=False, dtype=torch.float3
     k = torch.arange(width).view(1, 1, -1)
     mask = (i + j + k) % 2
     mask = mask.to(dtype).unsqueeze(0).unsqueeze(0)
+    mask = torch.tensor(mask, dtype=dtype, device=device, requires_grad=requires_grad)
     if reverse:
         mask = 1 - mask
     return mask
@@ -290,7 +291,7 @@ class CouplingLayer(nn.Module):
     def forward(self, x, sldj=None, reverse=True):
         if self.mask_type == MaskType.CHECKERBOARD:
             # Checkerboard mask
-            b = checkerboard_mask_3d(x.size(2), x.size(3), x.size(4), self.reverse_mask)
+            b = checkerboard_mask_3d(x.size(2), x.size(3), x.size(4), self.reverse_mask, device=x.device)
             x_b = x * b
             st = self.st_net(x_b)
             s, t = st.chunk(2, dim=1)
@@ -311,7 +312,7 @@ class CouplingLayer(nn.Module):
                 x = (x + t) * exp_s
 
                 # Add log-determinant of the Jacobian
-                sldj += s.view(s.size(0), -1).sum(-1)
+                sldj += s.reshape(s.size(0), -1).sum(-1)
         else:
             # Channel-wise mask
             if self.reverse_mask:
@@ -336,7 +337,7 @@ class CouplingLayer(nn.Module):
                 x_change = (x_change + t) * exp_s
 
                 # Add log-determinant of the Jacobian
-                sldj += s.view(s.size(0), -1).sum(-1)
+                sldj += s.reshape(s.size(0), -1).sum(-1)
 
             if self.reverse_mask:
                 x = torch.cat((x_id, x_change), dim=1)
@@ -390,13 +391,14 @@ class RealNVP(nn.Module):
 
 
     @torch.no_grad()
-    def sample(self, z_shape, n_samples, **kwargs):
+    def sample(self, z_shape, n_samples, device, **kwargs):
         """Sample from RealNVP model.
         Args:
             z_shape (tuple): 
             n_samples (int): Number of samples to generate.
+            device (torch.device): Device to use.
         """
-        z = self.prior.sample(n_samples)
+        z = self.prior.sample(n_samples).to(device)
         x, _ = self.forward(z, reverse=True)
         return x
 

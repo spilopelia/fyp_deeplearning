@@ -89,8 +89,8 @@ class srVAE3D(nn.Module):
 
 
     @torch.no_grad()
-    def reconstruct(self, x, **kwargs):
-        outputs = self.forward(x)
+    def reconstruct(self, x, y,**kwargs):
+        outputs = self.forward(x,y)
         return outputs.get('y'), outputs.get('y_hat'), outputs.get('x_hat')
 
 

@@ -153,7 +153,7 @@ class SlicePlotCallback(pl.Callback):
         input_tensor, target_tensor = batch
         prediction_tensor = outputs  # Assuming the output of validation_step is the prediction
 
-        if batch_idx == 0:
+        if outputs is not None and batch_idx == 0:
             #self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=0, slice_index=16)
             #self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=1, slice_index=16)
             self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=2, slice_index=16)
@@ -176,7 +176,7 @@ class SlicePlotCallback(pl.Callback):
         input_tensor, target_tensor = batch
         prediction_tensor = outputs  # Assuming the output of validation_step is the prediction
 
-        if batch_idx == 0:
+        if outputs is not None and batch_idx == 0:
             #self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=0, slice_index=16)
             #self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=1, slice_index=16)
             self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=2, slice_index=16)

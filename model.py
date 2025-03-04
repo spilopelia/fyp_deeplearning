@@ -7,6 +7,11 @@ from lag2eul import lag2eul
 from magvit import MagVitAE3D, MagVitVAE3D
 from srvae import srVAE3D
 from srvae_prior import *
+from score_model import UNet3DModel
+from score_vesde import VESDE, get_sigma_time, get_sample_time
+from torch_ema import ExponentialMovingAverage
+
+torch.backends.cudnn.benchmark = True
 VAE_list = ["VAE", "VAEwithRes", "MagVitVAE3D"]
 
 def crop_tensor(x):
@@ -463,7 +468,6 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 latent_dim: int = 32,
                 reversed: bool = False,
                 normalized: bool = False,
-                normalized_scale: float = 128.0,
                 eul_loss: bool = False,
                 kl_loss: bool = True,
                 kl_loss_annealing: bool = True,
@@ -476,6 +480,25 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 srvae_udim: int = 1024,
                 srvae_zdim: int = 1024,
                 srvae_prior: str = 'MixtureOfGaussians',
+                diffusion_noise_sigma: float = 0.1,
+                diffusion_sigma_min: float = 0.01,
+                diffusion_sigma_max: float = 100.0,
+                diffusion_sampling_eps: float = 1.0e-5,
+                diffusion_T: float = 1.0,
+                diffusion_num_scales = 1000,
+                score_act_f='swish',  
+                score_nf=32,  
+                score_ch_mult=[1, 2, 2, 1, 1],  
+                score_num_res_blocks=2,  
+                score_dropout=0.1,  
+                score_conditional=True,  
+                score_skip_rescale=True, 
+                score_init_scale=0.0,  
+                score_num_input_channels=6,  
+                score_num_output_channels=3,  
+                score_fourier_scale=16,  
+                ema: bool = False,
+                ema_rate: float = 0.999,
                 **kwargs
                 ):
         super(Lpt2NbodyNetLightning, self).__init__()
@@ -515,31 +538,50 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                             u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=StandardNormal)
             elif self.hparams.srvae_prior == 'RealNVP':
                 self.model = srVAE3D(x_shape = (3, 32, 32, 32), y_shape = (3, 32, 32, 32), 
-                            u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=RealNVP)                
+                            u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=RealNVP)  
+        elif model == "ICdiffusion":
+            self.model = UNet3DModel(
+                    act_f='swish',  # From "model.nonlinearity": "swish"
+                    nf=32,  # From "model.nf": 32
+                    ch_mult=[1, 2, 2, 1, 1],  # From "model.ch_mult": [1, 2, 2, 1, 1]
+                    num_res_blocks=2,  # From "model.num_res_blocks": 2
+                    dropout=0.1,  # From "model.dropout": 0.1
+                    resamp_with_conv=True,  # From "model.resamp_with_conv": true
+                    image_size=32,  # From "data.image_size": 128
+                    conditional=True,  # From "model.conditional": true
+                    fir=False,  # From "model.fir": false
+                    fir_kernel=[1, 3, 3, 1],  # From "model.fir_kernel": [1, 3, 3, 1]
+                    skip_rescale=True,  # From "model.skip_rescale": true
+                    embedding_type="fourier",  # From "model.embedding_type": "fourier"
+                    init_scale=0.0,  # From "model.init_scale": 0.0
+                    num_input_channels=6,  # From "data.num_input_channels": 2
+                    num_output_channels=3,  # From "data.num_output_channels": 1
+                    fourier_scale=16,  # From "model.fourier_scale": 16
+                )
+            self.sde = VESDE(self.hparams.diffusion_sigma_min, self.hparams.diffusion_sigma_max, self.hparams.diffusion_num_scales, self.hparams.diffusion_T, self.hparams.diffusion_sampling_eps)
+
+        if ema == True:
+            self.ema = ExponentialMovingAverage(self.model.parameters(), ema_rate)
+
         self.criterion = nn.MSELoss()  
 
     def forward(self, x, y=None):
         if y is not None:
             return self.model(x,y)
         return self.model(x)
-
-    #def normalize(self, x, scale):
-    #    return x / scale
-    
-    #def denormalize(self, x, scale):
-    #    return x * scale
     
     def training_step(self, batch, batch_idx):
         # Reverse batch if needed
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
-        #if self.hparams.normalized:
-        #    x = self.normalize(x, self.hparams.normalized_scale)
-        #    y = self.normalize(y, self.hparams.normalized_scale)
+        if self.hparams.normalized:
+            x, x_mean, x_std = standardize_displacement_field(x)
+            y, y_mean, y_std = standardize_displacement_field(y)
 
         # Forward pass
         if self.model_type in VAE_list:
             y_hat, mu, logvar = self(x)
+
         elif self.model_type == "SRVAE3D":
             output = self(x,y)
 
@@ -559,15 +601,33 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, kl_weight)
             loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, self.hparams.kl_loss_scale)
 
-            self.log('val_batch_loss', diagnostics['nelbo'], on_step=True, on_epoch=False, logger=True, sync_dist=True)
-            self.log('val_epoch_loss', diagnostics['nelbo'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_lag_loss', diagnostics['RE_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_lag_loss_x', diagnostics['RE_x'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_lag_loss_y', diagnostics['RE_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_kl_loss', diagnostics['KL'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('train_batch_loss', diagnostics['nelbo'], on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('train_epoch_loss', diagnostics['nelbo'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('train_epoch_lag_loss', diagnostics['RE_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('train_epoch_lag_loss_x', diagnostics['RE_x'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('train_epoch_lag_loss_y', diagnostics['RE_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('train_epoch_kl_loss', diagnostics['KL'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('train_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('train_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             return loss
+
+        elif self.model_type == "ICdiffusion":
+            sigma_time = get_sigma_time(self.hparams.diffusion_sigma_min, self.hparams.diffusion_sigma_max)
+            sample_time = get_sample_time(self.hparams.diffusion_sampling_eps, self.hparams.diffusion_T)
+
+            B = y.size(dim=0)     
+            #x += self.hparams.diffusion_noise_sigma * torch.randn_like(x).to(x.device)
+            time_steps = sample_time(shape=(B,)).to(x.device)
+            sigmas = sigma_time(time_steps).to(x.device)
+            sigmas = sigmas[:,None,None,None,None]
+            z = torch.randn_like(y,  device=y.device)
+            inputs = torch.cat([y + sigmas * z, x], dim=1)  
+            output = self.model(inputs, time_steps)
+            loss = torch.sum(torch.square(output + z)) /  B
+            self.log('train_batch_loss', loss, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('train_epoch_loss', loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            return loss
+
         else:
             y_hat = self(x)
             
@@ -626,13 +686,14 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         # Reverse batch if needed
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
-        #if self.hparams.normalized:
-        #    x = self.normalize(x, self.hparams.normalized_scale)
-        #    y = self.normalize(y, self.hparams.normalized_scale)
+        if self.hparams.normalized:
+            x, _, _ = standardize_displacement_field(x)
+            y, _, _ = standardize_displacement_field(y)
 
         # Forward pass
         if self.model_type in VAE_list:
             y_hat, mu, logvar = self(x)
+
         elif self.model_type == "SRVAE3D":
             output = self(x,y)
 
@@ -646,10 +707,41 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.log('val_epoch_kl_loss', diagnostics['KL'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('val_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('val_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+
+            y_hat = output.get('y_hat')
+            if self.hparams.normalized:
+                y_hat = y_hat * y_std + y_mean
             return output.get('y_hat')
+
+        elif self.model_type == "ICdiffusion":
+            sigma_time = get_sigma_time(self.hparams.diffusion_sigma_min, self.hparams.diffusion_sigma_max)
+            sample_time = get_sample_time(self.hparams.diffusion_sampling_eps, self.hparams.diffusion_T)
+
+            B = y.size(dim=0)     
+            #x += self.hparams.diffusion_noise_sigma * torch.randn_like(x).to(x.device)
+            time_steps = sample_time(shape=(B,)).to(x.device)
+            sigmas = sigma_time(time_steps).to(x.device)
+            sigmas = sigmas[:,None,None,None,None]
+            z = torch.randn_like(y,  device=y.device)
+            inputs = torch.cat([y + sigmas * z, x], dim=1)  
+            output = self.model(inputs, time_steps)
+            loss = torch.sum(torch.square(output + z)) /  B
+            self.log('val_batch_loss', loss, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('val_epoch_loss', loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            if self.trainer.current_epoch % 1 == 0 and batch_idx == 0:
+                x = x[0:1]
+                y = y[0:1]
+                sampled_ic = self.sample_initial_condition(x)
+                if self.hparams.normalized:
+                    y = y * y_std + y_mean
+                    sampled_ic = sampled_ic * y_std + y_mean
+                lag_loss = self.criterion(sampled_ic, y)
+                self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+                return sampled_ic
+            return None
         else:
             y_hat = self(x)
-            
+
         # Base lagrangian loss
         lag_loss = self.criterion(y_hat, y)
         val_loss = lag_loss
@@ -684,8 +776,8 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         if kl_enabled:
             self.log('val_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
-        #if self.hparams.normalized:
-        #    y_hat = self.denormalize(y_hat, self.hparams.normalized_scale)
+        if self.hparams.normalized:
+            y_hat = y_hat * y_std + y_mean
 
         return y_hat
     
@@ -693,30 +785,49 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         # Reverse batch if needed
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
-        #if self.hparams.normalized:
-        #    x = self.normalize(x, self.hparams.normalized_scale)
-        #    y = self.normalize(y, self.hparams.normalized_scale)
+        if self.hparams.normalized:
+            x, _, _ = standardize_displacement_field(x)
+            y, _, _ = standardize_displacement_field(y)
+
         # Forward pass
         if self.model_type in VAE_list:
             y_hat, mu, logvar = self(x)
+
         elif self.model_type == "SRVAE3D":
             output = self(x,y)
-            loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale)
-            self.log('test_batch_loss', diagnostics['nelbo'], on_step=True, on_epoch=False, logger=True, sync_dist=True)
-            self.log('test_epoch_loss', diagnostics['nelbo'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('test_epoch_lag_loss', diagnostics['Re_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('test_epoch_lag_loss_x', diagnostics['Re_x'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('test_epoch_lag_loss_y', diagnostics['Re_xy'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('test_epoch_kl_loss', diagnostics['KL'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('test_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('test_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
+
+            loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, self.hparams.kl_loss_scale)
+            y_hat = output.get('y_hat')
+            if self.hparams.normalized:
+                y_hat = y_hat * y_std + y_mean
             return output.get('y_hat')
+
+        elif self.model_type == "ICdiffusion":
+            sigma_time = get_sigma_time(self.hparams.diffusion_sigma_min, self.hparams.diffusion_sigma_max)
+            sample_time = get_sample_time(self.hparams.diffusion_sampling_eps, self.hparams.diffusion_T)
+
+            B = y.size(dim=0)     
+            #x += self.hparams.diffusion_noise_sigma * torch.randn_like(x).to(x.device)
+            time_steps = sample_time(shape=(B,)).to(x.device)
+            sigmas = sigma_time(time_steps).to(x.device)
+            sigmas = sigmas[:,None,None,None,None]
+            z = torch.randn_like(y,  device=y.device)
+            inputs = torch.cat([y + sigmas * z, x], dim=1)  
+            output = self.model(inputs, time_steps)
+            loss = torch.sum(torch.square(output + z)) /  B
+            if self.trainer.current_epoch % 1 == 0 and batch_idx == 0:
+                x = x[0:1]
+                sampled_ic = self.sample_initial_condition(x)
+                if self.hparams.normalized:
+                    sampled_ic = sampled_ic * y_std + y_mean
+                return sampled_ic
+            return None
         else:
             y_hat = self(x)
-            
+
         # Base lagrangian loss
         lag_loss = self.criterion(y_hat, y)
-        test_loss = lag_loss
+        val_loss = lag_loss
 
         # Flags for loss conditions
         eul_enabled = self.hparams.eul_loss
@@ -724,24 +835,29 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
         # Apply lagrangian scaling if either auxiliary loss is active
         if eul_enabled or kl_enabled:
-            test_loss = lag_loss * self.hparams.lag_loss_scale
+            val_loss = lag_loss * self.hparams.lag_loss_scale
 
         # Euler loss component
         if eul_enabled:
             eul_y_hat, eul_y = lag2eul([y_hat, y])
             eul_loss = self.criterion(eul_y_hat, eul_y)
-            test_loss += eul_loss * self.hparams.eul_loss_scale
+            val_loss += eul_loss * self.hparams.eul_loss_scale
 
         # KL divergence component
         if kl_enabled:
-            kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-            test_loss += kl_loss * self.hparams.kl_loss_scale
+            kl_loss = -0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1) 
+            kl_loss = kl_loss.mean()
+            val_loss += kl_loss * self.hparams.kl_loss_scale
 
-        #if self.hparams.normalized:
-        #    y_hat = self.denormalize(y_hat, self.hparams.normalized_scale)
+        if self.hparams.normalized:
+            y_hat = y_hat * y_std + y_mean
 
         return y_hat
-    
+
+    def on_before_zero_grad(self, *args, **kwargs):
+        # Update EMA after each training step, post-optimization
+        self.ema.update()
+
     def configure_optimizers(self):
         if self.hparams.optimizer == 'AdamW':
             optimizer = optim.AdamW(self.parameters(), betas=(self.hparams.beta1, self.hparams.beta2), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
@@ -778,3 +894,37 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             return [optimizer], [scheduler]
 
         return optimizer
+
+    def standardize_displacement_field(data, mean=None, std=None):
+        """
+        Standardize a 3D displacement field tensor.
+        
+        Args:
+            data: Tensor of shape (B, C, D, H, W), e.g., (B, 3, 128, 128, 128)
+            mean: Optional tensor of shape (C,) with precomputed mean per channel
+            std: Optional tensor of shape (C,) with precomputed std per channel
+        
+        Returns:
+            standardized_data: Normalized tensor
+            mean: Mean per channel (computed if not provided)
+            std: Std per channel (computed if not provided)
+        """
+        if mean is None or std is None:
+            # Compute mean and std across batch and spatial dimensions (B, D, H, W)
+            mean = data.mean(dim=[0, 2, 3, 4]).view(1, -1, 1, 1, 1)  # Shape: (1, C, 1, 1, 1)
+            std = data.std(dim=[0, 2, 3, 4]).view(1, -1, 1, 1, 1)    # Shape: (1, C, 1, 1, 1)
+        # Reshape mean and std for broadcasting
+        standardized_data = (data - mean) / (std + 1e-8)
+        return standardized_data, mean, std
+
+    def sample_initial_condition(self, input_data):
+        """Sample initial conditions using the reverse diffusion process."""
+        # Placeholder: adapt based on your diffusion process (e.g., VESDE)
+        shape = (1, 3, 32, 32, 32)
+        x = self.sde.prior_sampling(shape).to(self.device)  # Noise as starting point
+        timesteps = self.sde.timesteps.to(self.device)  # Reverse diffusion steps
+        for t in timesteps:
+            t_vec = torch.ones(1, device=self.device) * t
+            model_output = self.model(torch.cat([x, input_data], dim=1), t_vec)
+            x, _ = self.sde.update_fn(x, t_vec, model_output=model_output)
+        return x
