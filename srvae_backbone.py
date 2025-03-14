@@ -20,7 +20,8 @@ class q_u(nn.Module):
 
     def forward(self, input):
         mu, logvar = self.core_nn(input).chunk(2, 1)
-        return mu, F.hardtanh(logvar, min_val=-7, max_val=7.)
+        #return mu, F.hardtanh(logvar, min_val=-7, max_val=7.)
+        return mu, logvar
 
 class p_y(nn.Module):
     """ 3D Decoder p(y|u) """
@@ -60,7 +61,8 @@ class q_z(nn.Module):
 
     def forward(self, input):
         mu, logvar = self.core_nn(input).chunk(2, 1)
-        return mu, F.hardtanh(logvar, min_val=-7, max_val=7.)
+        #return mu, F.hardtanh(logvar, min_val=-7, max_val=7.)
+        return mu, logvar
 
 class p_z(nn.Module):
     """ 3D Encoder p(z| y, u) """
@@ -105,7 +107,8 @@ class p_z(nn.Module):
         u_out = self.u_nn(u)
         joint = torch.cat((y_out, u_out), 1)
         mu, logvar = self.core_nn(joint).chunk(2, 1)
-        return mu, F.hardtanh(logvar, min_val=-7, max_val=7.)
+        #return mu, F.hardtanh(logvar, min_val=-7, max_val=7.)
+        return mu, logvar
 
 class p_x(nn.Module):
     """ 3D Decoder p(x| y, z) """

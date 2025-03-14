@@ -86,57 +86,67 @@ class SlicePlotCallback(pl.Callback):
         plt.close(fig)
 
     def plot_slices_and_residuals(self, trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis, slice_index):
-            """
-            Plots slices of the input, target, prediction, and residual (difference) for visualization.
-            
-            Args:
-            - trainer: The PyTorch Lightning trainer.
-            - pl_module: The LightningModule (your model).
-            - input_tensor: The 5D input tensor (batch_size, channel, 32, 32, 32).
-            - target_tensor: The 5D target tensor (batch_size, channel, 32, 32, 32).
-            - prediction_tensor: The 5D predicted tensor (batch_size, channel, 32, 32, 32).
-            - batch_idx: The current batch index (used for logging).
-            """
-            # Convert tensors to numpy arrays (assuming batch size of 1 for simplicity)
-            input_array = input_tensor[0,:,:,:,:].detach().cpu().numpy()
-            target_array = target_tensor[0,:,:,:,:].detach().cpu().numpy()
-            prediction_array = prediction_tensor[0,:,:,:,:].detach().cpu().numpy()
-            direction=['x','y','z']
+        """
+        Plots slices of the input, target, prediction, and residual (difference) for visualization.
 
-            # Plot slices
-            fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+        Args:
+        - trainer: The PyTorch Lightning trainer.
+        - input_tensor: The 5D input tensor (batch_size, channel, 32, 32, 32).
+        - target_tensor: The 5D target tensor (batch_size, channel, 32, 32, 32).
+        - prediction_tensor: The 5D predicted tensor (batch_size, channel, 32, 32, 32).
+        - batch_idx: The current batch index (used for logging).
+        - axis: Axis index along which to slice (0, 1, or 2).
+        - slice_index: Index of the slice along the chosen axis.
+        """
+        # Convert tensors to numpy arrays (assuming batch size of 1 for simplicity)
+        input_array = input_tensor[0, :, :, :, :].detach().cpu().numpy()
+        target_array = target_tensor[0, :, :, :, :].detach().cpu().numpy()
+        prediction_array = prediction_tensor[0, :, :, :, :].detach().cpu().numpy()
+        direction = ['x', 'y', 'z']
 
-            # Select the slice along the specified axis
-            input_slice = input_array[axis,:,:,slice_index]
-            target_slice = target_array[axis,:,:,slice_index]
-            prediction_slice = prediction_array[axis,:,:,slice_index]
-            residual_slice = target_slice - prediction_slice
+        # Select the slice along the specified axis
+        input_slice = input_array[axis, :, :, slice_index]
+        target_slice = target_array[axis, :, :, slice_index]
+        prediction_slice = prediction_array[axis, :, :, slice_index]
+        residual_slice = target_slice - prediction_slice
 
-            # Plot input, target, prediction, and residual slices
-            im0 = axes[0].imshow(input_slice, cmap='coolwarm')
-            axes[0].set_title(f'ZA Slice (direction={direction[axis]}, z_index={slice_index})')
-            plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)  # Add colorbar to the first plot
+        # Compute the maximum absolute value in each slice
+        input_max = np.abs(input_slice).max()
+        target_max = np.abs(target_slice).max()
+        prediction_max = np.abs(prediction_slice).max()
+        residual_max = np.abs(residual_slice).max()
 
-            im1 = axes[1].imshow(target_slice, cmap='coolwarm')
-            axes[1].set_title(f'FastPM Slice (direction={direction[axis]}, z_index={slice_index})')
-            plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)  # Add colorbar to the second plot
+        # Create a figure with four subplots
+        fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
-            im2 = axes[2].imshow(prediction_slice, cmap='coolwarm')
-            axes[2].set_title(f'UNet Slice (direction={direction[axis]}, z_index={slice_index})')
-            plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)  # Add colorbar to the third plot
+        # Plot input slice
+        im0 = axes[0].imshow(input_slice, cmap='coolwarm', vmin=-input_max, vmax=input_max)
+        axes[0].set_title(f'ZA Slice (direction={direction[axis]}, z_index={slice_index})')
+        plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
 
-            im3 = axes[3].imshow(residual_slice, cmap='coolwarm')
-            axes[3].set_title(f'Residual (Difference) Slice')
-            plt.colorbar(im3, ax=axes[3], fraction=0.046, pad=0.04)  # Add colorbar to the fourth plot
+        # Plot target slice
+        im1 = axes[1].imshow(target_slice, cmap='coolwarm', vmin=-target_max, vmax=target_max)
+        axes[1].set_title(f'FastPM Slice (direction={direction[axis]}, z_index={slice_index})')
+        plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
-            # Save the plot as an image and log it to WandB (or another logger)
-            plt.tight_layout()
+        # Plot prediction slice
+        im2 = axes[2].imshow(prediction_slice, cmap='coolwarm', vmin=-prediction_max, vmax=prediction_max)
+        axes[2].set_title(f'Prediction Slice (direction={direction[axis]}, z_index={slice_index})')
+        plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
 
-            log_key = f"slice_residuals_batch_{batch_idx}_axis_{direction[axis]}_slice_{slice_index}"
-            trainer.logger.experiment.log({log_key: fig}, step=trainer.global_step)
+        # Plot residual (difference) slice
+        im3 = axes[3].imshow(residual_slice, cmap='coolwarm', vmin=-residual_max, vmax=residual_max)
+        axes[3].set_title('Residual (Difference) Slice')
+        plt.colorbar(im3, ax=axes[3], fraction=0.046, pad=0.04)
 
-            # Close the figure to avoid memory leaks
-            plt.close(fig)
+        # Adjust layout and log the figure
+        plt.tight_layout()
+        log_key = f"slice_residuals_batch_{batch_idx}_axis_{direction[axis]}_slice_{slice_index}"
+        trainer.logger.experiment.log({log_key: fig}, step=trainer.global_step)
+
+        # Close the figure to avoid memory leaks
+        plt.close(fig)
+
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         """

@@ -468,6 +468,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 latent_dim: int = 32,
                 reversed: bool = False,
                 normalized: bool = False,
+                normalized_mean_za = None,
+                normalized_std_za = None,
+                normalized_mean_fastpm = None,
+                normalized_std_fastpm = None,
                 eul_loss: bool = False,
                 kl_loss: bool = True,
                 kl_loss_annealing: bool = True,
@@ -505,7 +509,13 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
         self.save_hyperparameters(ignore=['kwargs'])  # This will save all init args except kwargs
         self.model_type = model
-
+        self.x_mean = normalized_mean_za
+        self.x_std = normalized_std_za
+        self.y_mean = normalized_mean_fastpm
+        self.y_std = normalized_std_fastpm
+        if reversed:
+            self.x_mean, self.y_mean = self.y_mean, self.x_mean
+            self.x_std, self.y_std = self.y_std, self.x_std
         if model == "default":
             self.model = Lpt2NbodyNet(BasicBlock,init_dim=self.hparams.init_dim)
         elif model == "UNet":
@@ -560,23 +570,24 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 )
             self.sde = VESDE(self.hparams.diffusion_sigma_min, self.hparams.diffusion_sigma_max, self.hparams.diffusion_num_scales, self.hparams.diffusion_T, self.hparams.diffusion_sampling_eps)
 
-        if ema == True:
-            self.ema = ExponentialMovingAverage(self.model.parameters(), ema_rate)
-
         self.criterion = nn.MSELoss()  
 
     def forward(self, x, y=None):
         if y is not None:
             return self.model(x,y)
         return self.model(x)
-    
+
+    def on_fit_start(self):
+        if self.hparams.ema == True:
+            self.ema = ExponentialMovingAverage(self.model.parameters(), self.hparams.ema_rate)
+
     def training_step(self, batch, batch_idx):
         # Reverse batch if needed
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
         if self.hparams.normalized:
-            x, x_mean, x_std = standardize_displacement_field(x)
-            y, y_mean, y_std = standardize_displacement_field(y)
+            x, x_mean, x_std = standardize_displacement_field(x,self.x_mean,self.x_std)
+            y, y_mean, y_std = standardize_displacement_field(y,self.y_mean,self.y_std)
 
         # Forward pass
         if self.model_type in VAE_list:
@@ -687,8 +698,8 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
         if self.hparams.normalized:
-            x, _, _ = standardize_displacement_field(x)
-            y, _, _ = standardize_displacement_field(y)
+            x, x_mean, x_std = standardize_displacement_field(x, self.x_mean, self.x_std)
+            y, y_mean, y_std = standardize_displacement_field(y, self.y_mean, self.y_std)
 
         # Forward pass
         if self.model_type in VAE_list:
@@ -731,7 +742,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             if self.trainer.current_epoch % 1 == 0 and batch_idx == 0:
                 x = x[0:1]
                 y = y[0:1]
-                sampled_ic = self.sample_initial_condition(x)
+                sampled_ic, _ = self.sample_initial_condition(x)
                 if self.hparams.normalized:
                     y = y * y_std + y_mean
                     sampled_ic = sampled_ic * y_std + y_mean
@@ -786,8 +797,8 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
         if self.hparams.normalized:
-            x, _, _ = standardize_displacement_field(x)
-            y, _, _ = standardize_displacement_field(y)
+            x, x_mean, x_std = standardize_displacement_field(x, self.x_mean, self.x_std)
+            y, y_mean, y_std = standardize_displacement_field(y, self.y_mean, self.y_std)
 
         # Forward pass
         if self.model_type in VAE_list:
@@ -856,12 +867,14 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
     def on_before_zero_grad(self, *args, **kwargs):
         # Update EMA after each training step, post-optimization
-        self.ema.update()
+        if self.hparams.ema == True:
+            self.ema.update()
 
     def configure_optimizers(self):
         if self.hparams.optimizer == 'AdamW':
             optimizer = optim.AdamW(self.parameters(), betas=(self.hparams.beta1, self.hparams.beta2), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        
+        if self.hparams.optimizer == 'Adamax':
+            optimizer = optim.Adamax(self.parameters(), betas=(self.hparams.beta1, self.hparams.beta2), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
         else:
             optimizer = optim.Adam(self.parameters(), betas=(self.hparams.beta1, self.hparams.beta2), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
 
@@ -897,23 +910,22 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
     def standardize_displacement_field(data, mean=None, std=None):
         """
-        Standardize a 3D displacement field tensor.
+        Standardize a 3D displacement field tensor isotropically across all channels.
         
         Args:
             data: Tensor of shape (B, C, D, H, W), e.g., (B, 3, 128, 128, 128)
-            mean: Optional tensor of shape (C,) with precomputed mean per channel
-            std: Optional tensor of shape (C,) with precomputed std per channel
-        
+            mean: Optional scalar with precomputed global mean
+            std: Optional scalar with precomputed global std
+            
         Returns:
             standardized_data: Normalized tensor
-            mean: Mean per channel (computed if not provided)
-            std: Std per channel (computed if not provided)
+            mean: Global mean (computed if not provided)
+            std: Global std (computed if not provided)
         """
         if mean is None or std is None:
-            # Compute mean and std across batch and spatial dimensions (B, D, H, W)
-            mean = data.mean(dim=[0, 2, 3, 4]).view(1, -1, 1, 1, 1)  # Shape: (1, C, 1, 1, 1)
-            std = data.std(dim=[0, 2, 3, 4]).view(1, -1, 1, 1, 1)    # Shape: (1, C, 1, 1, 1)
-        # Reshape mean and std for broadcasting
+            # Compute global mean and std across all dimensions (B, C, D, H, W)
+            mean = data.mean()
+            std = data.std()
         standardized_data = (data - mean) / (std + 1e-8)
         return standardized_data, mean, std
 
@@ -926,5 +938,5 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         for t in timesteps:
             t_vec = torch.ones(1, device=self.device) * t
             model_output = self.model(torch.cat([x, input_data], dim=1), t_vec)
-            x, _ = self.sde.update_fn(x, t_vec, model_output=model_output)
-        return x
+            x, x_mean = self.sde.update_fn(x, t_vec, model_output=model_output)
+        return x, x_mean

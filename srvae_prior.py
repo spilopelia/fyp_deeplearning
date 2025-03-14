@@ -77,7 +77,7 @@ class MixtureOfGaussians(Prior):
     def log_normal_mixture(self, z, m, v):
         """ Computes log probability of a uniformly-weighted Gaussian mixture.
         """
-        z = z.view(z.shape[0], 1, -1)
+        z = z.reshape(z.shape[0], 1, -1)
         log_probs = self.log_normal(z, m, v)
         log_prob = self.log_mean_exp(log_probs, 1)
         return log_prob
@@ -92,7 +92,7 @@ class MixtureOfGaussians(Prior):
         m, v = self.gaussian_parameters(self.z_pre.squeeze(0), dim=0)
         m, v = m[idx], v[idx]
         z_samples = self.sample_gaussian(m, v)
-        return z_samples.view(z_samples.shape[0], *self.z_shape)
+        return z_samples.reshape(z_samples.shape[0], *self.z_shape)
 
     def log_p(self, z, **kwargs):
         return self.forward(z)
@@ -123,7 +123,7 @@ class StandardNormal:
         """ Outputs the log p(z).
         """
         log_probs = z.pow(2) + math.log(math.pi * 2.)
-        log_probs = -0.5 * log_probs.view(z.size(0), -1).sum(dim=1)
+        log_probs = -0.5 * log_probs.reshape(z.size(0), -1).sum(dim=1)
         return log_probs
 
     def __call__(self, z, **kwargs):
@@ -213,20 +213,20 @@ def squeeze_2x2x2(x, reverse=False, alt_order=False):
                 raise ValueError('For reverse, number of channels {} is not divisible by 8'.format(c))
             new_c = c // 8
             # Reshape to split channels into a factor of 8 and the remaining channels.
-            x = x.view(b, d, h, w, new_c, block_size, block_size, block_size)
+            x = x.reshape(b, d, h, w, new_c, block_size, block_size, block_size)
             # Permute to interlace the factors with the spatial dimensions.
             x = x.permute(0, 1, 5, 2, 6, 3, 7, 4)
             # Merge factors with spatial dims: resulting in (B, D*2, H*2, W*2, new_c)
-            x = x.contiguous().view(b, d * 2, h * 2, w * 2, new_c)
+            x = x.contiguous().reshape(b, d * 2, h * 2, w * 2, new_c)
         else:
             if d % 2 != 0 or h % 2 != 0 or w % 2 != 0:
                 raise ValueError('Expected even spatial dims D x H x W, got {}x{}x{}'.format(d, h, w))
             # Split each spatial dimension by 2.
-            x = x.view(b, d // 2, block_size, h // 2, block_size, w // 2, block_size, c)
+            x = x.reshape(b, d // 2, block_size, h // 2, block_size, w // 2, block_size, c)
             # Permute to bring the block factors into the channel dimension.
             x = x.permute(0, 1, 3, 5, 7, 2, 4, 6)
             # Merge the factors: new shape (B, D//2, H//2, W//2, C * 8)
-            x = x.contiguous().view(b, d // 2, h // 2, w // 2, c * 8)
+            x = x.contiguous().reshape(b, d // 2, h // 2, w // 2, c * 8)
         # Bring channels to the second dimension.
         x = x.permute(0, 4, 1, 2, 3)  # (B, new_channels, D, H, W)
     return x
@@ -245,9 +245,9 @@ def checkerboard_mask_3d(depth, height, width, reverse=False, dtype=torch.float3
     Returns:
         torch.Tensor: Mask of shape (1, 1, depth, height, width).
     """
-    i = torch.arange(depth).view(-1, 1, 1)
-    j = torch.arange(height).view(1, -1, 1)
-    k = torch.arange(width).view(1, 1, -1)
+    i = torch.arange(depth).reshape(-1, 1, 1)
+    j = torch.arange(height).reshape(1, -1, 1)
+    k = torch.arange(width).reshape(1, 1, -1)
     mask = (i + j + k) % 2
     mask = mask.to(dtype).unsqueeze(0).unsqueeze(0)
     mask = torch.tensor(mask, dtype=dtype, device=device, requires_grad=requires_grad)
@@ -379,7 +379,7 @@ class RealNVP(nn.Module):
         num_blocks (int): Number of residual blocks in the s and t network of
         `Coupling` layers.
     """
-    def __init__(self, input_shape, mid_channels=64, num_blocks=5, num_scales=2, prior='mog'):
+    def __init__(self, input_shape, mid_channels=64, num_blocks=5, num_scales=2, prior='std_normal'):
         super().__init__()
         self.flows = _RealNVP(0, num_scales, input_shape[0], mid_channels, num_blocks)
 
