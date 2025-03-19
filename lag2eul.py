@@ -8,6 +8,9 @@ def lag2eul(
         eul_pad=0,
         rm_dis_mean=False,
         periodic=True,
+        dis_std=1.0,
+        boxsize=128.,
+        meshsize=32,
         **kwargs):
     """Transform fields from Lagrangian description to Eulerian description
 
@@ -31,6 +34,10 @@ def lag2eul(
 
     Implementation follows pmesh/cic.py by Yu Feng.
     """
+    # NOTE the following factor assumes the displacements have been normalized
+    # by data.norms.cosmology.dis, and thus undoes it
+    dis_norm = dis_std * meshsize / boxsize  # to mesh unit
+    dis_norm *= eul_scale_factor
     if isinstance(dis, torch.Tensor):
         dis = [dis]
     if isinstance(val, (float, torch.Tensor)):
@@ -70,7 +77,7 @@ def lag2eul(
 
         mesh = torch.zeros(N, C, *DHW, dtype=dtype, device=device)
 
-        pos = (d - d_mean)
+        pos = (d - d_mean) * dis_norm
         del d
 
         pos[:, 0] += torch.arange(0, DHW[0] - 2 * eul_pad, eul_scale_factor,

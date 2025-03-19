@@ -10,6 +10,8 @@ from srvae_prior import *
 from score_model import UNet3DModel
 from score_vesde import VESDE, get_sigma_time, get_sample_time
 from torch_ema import ExponentialMovingAverage
+from ddim_sampler import DDIMSampler, DDPMSampler, extract
+from ddim_model import ddim_UNet3D
 
 torch.backends.cudnn.benchmark = True
 VAE_list = ["VAE", "VAEwithRes", "MagVitVAE3D"]
@@ -489,20 +491,16 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 diffusion_sigma_max: float = 100.0,
                 diffusion_sampling_eps: float = 1.0e-5,
                 diffusion_T: float = 1.0,
-                diffusion_num_scales = 1000,
-                score_act_f='swish',  
-                score_nf=32,  
-                score_ch_mult=[1, 2, 2, 1, 1],  
-                score_num_res_blocks=2,  
-                score_dropout=0.1,  
-                score_conditional=True,  
-                score_skip_rescale=True, 
-                score_init_scale=0.0,  
-                score_num_input_channels=6,  
-                score_num_output_channels=3,  
-                score_fourier_scale=16,  
+                diffusion_num_scales: int = 1000,
+                score_act_f: str ='swish',  
+                ch_mult = [1, 2, 2, 1, 1],  
+                dropout: float = 0.1,  
+                num_input_channels: int = 6,  
+                num_output_channels: int = 3 ,  
                 ema: bool = False,
                 ema_rate: float = 0.999,
+                ddim_beta = [0.0001, 0.02],
+                sampler: str = 'DDIM',
                 **kwargs
                 ):
         super(Lpt2NbodyNetLightning, self).__init__()
@@ -551,11 +549,11 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                             u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=RealNVP)  
         elif model == "ICdiffusion":
             self.model = UNet3DModel(
-                    act_f='swish',  # From "model.nonlinearity": "swish"
-                    nf=32,  # From "model.nf": 32
-                    ch_mult=[1, 2, 2, 1, 1],  # From "model.ch_mult": [1, 2, 2, 1, 1]
-                    num_res_blocks=2,  # From "model.num_res_blocks": 2
-                    dropout=0.1,  # From "model.dropout": 0.1
+                    act_f=score_act_f,  # From "model.nonlinearity": "swish"
+                    nf=base_filters,  # From "model.nf": 32
+                    ch_mult=ch_mult,  # From "model.ch_mult": [1, 2, 2, 1, 1]
+                    num_res_blocks=blocks_per_layer,  # From "model.num_res_blocks": 2
+                    dropout=dropout,  # From "model.dropout": 0.1
                     resamp_with_conv=True,  # From "model.resamp_with_conv": true
                     image_size=32,  # From "data.image_size": 128
                     conditional=True,  # From "model.conditional": true
@@ -564,11 +562,33 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                     skip_rescale=True,  # From "model.skip_rescale": true
                     embedding_type="fourier",  # From "model.embedding_type": "fourier"
                     init_scale=0.0,  # From "model.init_scale": 0.0
-                    num_input_channels=6,  # From "data.num_input_channels": 2
-                    num_output_channels=3,  # From "data.num_output_channels": 1
+                    num_input_channels=num_input_channels,  # From "data.num_input_channels": 2
+                    num_output_channels=num_output_channels,  # From "data.num_output_channels": 1
                     fourier_scale=16,  # From "model.fourier_scale": 16
                 )
             self.sde = VESDE(self.hparams.diffusion_sigma_min, self.hparams.diffusion_sigma_max, self.hparams.diffusion_num_scales, self.hparams.diffusion_T, self.hparams.diffusion_sampling_eps)
+        elif model == "DDIM":
+            self.model = ddim_UNet3D(
+                    in_channels=num_input_channels,         # adjust for volumetric data (e.g. 1 for grayscale, 3 for RGB)
+                    model_channels=base_filters,
+                    out_channels=num_output_channels,
+                    num_res_blocks=blocks_per_layer,
+                    attention_resolutions=(8, 16),
+                    dropout=dropout,
+                    channel_mult=tuple(ch_mult),
+                    conv_resample=True,
+                    num_heads=4
+                )
+            # generate T steps of beta
+            self.register_buffer("beta_t", torch.linspace(*ddim_beta, diffusion_num_scales, dtype=torch.float32))
+
+            # calculate the cumulative product of $\alpha$ , named $\bar{\alpha_t}$ in paper
+            alpha_t = 1.0 - self.beta_t
+            alpha_t_bar = torch.cumprod(alpha_t, dim=0)
+
+            # calculate and store two coefficient of $q(x_t | x_0)$
+            self.register_buffer("signal_rate", torch.sqrt(alpha_t_bar))
+            self.register_buffer("noise_rate", torch.sqrt(1.0 - alpha_t_bar))
 
         self.criterion = nn.MSELoss()  
 
@@ -639,59 +659,79 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.log('train_epoch_loss', loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             return loss
 
+        elif self.model_type == "DDIM":
+            # get a random training step $t \sim Uniform({1, ..., T})$
+            t = torch.randint(self.hparams.diffusion_num_scales, size=(y.shape[0],), device=y.device)
+
+            # generate $\epsilon \sim N(0, 1)$
+            epsilon = torch.randn_like(y)
+
+            # predict the noise added from $x_{t-1}$ to $x_t$
+            y_t = (extract(self.signal_rate, t, y.shape) * y +
+                extract(self.noise_rate, t, y.shape) * epsilon)
+            inputs = torch.cat([y_t, x], dim=1)
+            epsilon_theta = self.model(inputs, t)
+
+            # get the gradient
+            loss = F.mse_loss(epsilon_theta, epsilon, reduction="none")
+            loss = torch.sum(loss)
+            self.log('train_batch_loss', loss, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('train_epoch_loss', loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            return loss
+
         else:
             y_hat = self(x)
             
-        # Base lagrangian loss
-        lag_loss = self.criterion(y_hat, y)
-        train_loss = lag_loss
+            # Base lagrangian loss
+            lag_loss = self.criterion(y_hat, y)
+            train_loss = lag_loss
 
-        # Flags for loss conditions
-        eul_enabled = self.hparams.eul_loss
-        kl_enabled = (self.model_type in VAE_list) and self.hparams.kl_loss
+            # Flags for loss conditions
+            eul_enabled = self.hparams.eul_loss
+            kl_enabled = (self.model_type in VAE_list) and self.hparams.kl_loss
 
-        # Apply lagrangian scaling if either auxiliary loss is active
-        if eul_enabled or kl_enabled:
-            train_loss = lag_loss * self.hparams.lag_loss_scale
+            # Apply lagrangian scaling if either auxiliary loss is active
+            if eul_enabled or kl_enabled:
+                train_loss = lag_loss * self.hparams.lag_loss_scale
 
-        # Euler loss component
-        if eul_enabled:
-            eul_y_hat, eul_y = lag2eul([y_hat, y])
-            eul_loss = self.criterion(eul_y_hat, eul_y)
-            train_loss += eul_loss * self.hparams.eul_loss_scale
+            # Euler loss component
+            if eul_enabled:
+                eul_y_hat, eul_y = lag2eul([y_hat, y])
+                eul_loss = self.criterion(eul_y_hat, eul_y)
+                train_loss += eul_loss * self.hparams.eul_loss_scale
 
-        # KL divergence component
-        if kl_enabled:
-            kl_loss = -0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1) 
-            kl_loss = kl_loss.mean()
-            kl_weight = 1.0
-            if self.hparams.kl_loss_annealing:
-                # Calculate current training step
-                current_step = self.global_step
+            # KL divergence component
+            if kl_enabled:
+                kl_loss = -0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1) 
+                kl_loss = kl_loss.mean()
+                kl_weight = 1.0
+                if self.hparams.kl_loss_annealing:
+                    # Calculate current training step
+                    current_step = self.global_step
 
-                # Define steps per cycle
-                steps_per_cycle = self.hparams.steps_per_cycle
+                    # Define steps per cycle
+                    steps_per_cycle = self.hparams.steps_per_cycle
 
-                # Compute KL weight using cyclical annealing
-                kl_weight_ratio = cyclical_annealing(current_step, steps_per_cycle,
-                                               ratio=self.hparams.kl_ratio).to(self.device)
-                kl_weight = self.hparams.kl_loss_scale * kl_weight_ratio
-                self.log('kl_weight', kl_weight, on_step=True, on_epoch=False, logger=True, sync_dist=True)
-            # Apply the annealed KL weight
-            train_loss += kl_loss * kl_weight 
+                    # Compute KL weight using cyclical annealing
+                    kl_weight_ratio = cyclical_annealing(current_step, steps_per_cycle,
+                                                ratio=self.hparams.kl_ratio).to(self.device)
+                    kl_weight = self.hparams.kl_loss_scale * kl_weight_ratio
+                    self.log('kl_weight', kl_weight, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+                # Apply the annealed KL weight
+                train_loss += kl_loss * kl_weight 
 
-        # Logging
-        self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True, sync_dist=True)
-        self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-        self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-        
-        if eul_enabled:
-            self.log('train_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-        
-        if kl_enabled:
-            self.log('train_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            # Logging
+            self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            
+            if eul_enabled:
+                self.log('train_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            
+            if kl_enabled:
+                self.log('train_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
-        return train_loss
+            return train_loss
 
     def validation_step(self, batch, batch_idx):
         # Reverse batch if needed
@@ -750,120 +790,73 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
                 return sampled_ic
             return None
-        else:
-            y_hat = self(x)
+        elif self.model_type == "DDIM":
+            # get a random training step $t \sim Uniform({1, ..., T})$
+            t = torch.randint(self.hparams.diffusion_num_scales, size=(y.shape[0],), device=y.device)
 
-        # Base lagrangian loss
-        lag_loss = self.criterion(y_hat, y)
-        val_loss = lag_loss
+            # generate $\epsilon \sim N(0, 1)$
+            epsilon = torch.randn_like(y)
 
-        # Flags for loss conditions
-        eul_enabled = self.hparams.eul_loss
-        kl_enabled = (self.model_type in VAE_list) and self.hparams.kl_loss
+            # predict the noise added from $x_{t-1}$ to $x_t$
+            y_t = (extract(self.signal_rate, t, y.shape) * y +
+                extract(self.noise_rate, t, y.shape) * epsilon)
+            inputs = torch.cat([y_t, x], dim=1)
+            epsilon_theta = self.model(inputs, t)
 
-        # Apply lagrangian scaling if either auxiliary loss is active
-        if eul_enabled or kl_enabled:
-            val_loss = lag_loss * self.hparams.lag_loss_scale
-
-        # Euler loss component
-        if eul_enabled:
-            eul_y_hat, eul_y = lag2eul([y_hat, y])
-            eul_loss = self.criterion(eul_y_hat, eul_y)
-            val_loss += eul_loss * self.hparams.eul_loss_scale
-
-        # KL divergence component
-        if kl_enabled:
-            kl_loss = -0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1) 
-            kl_loss = kl_loss.mean()
-            val_loss += kl_loss * self.hparams.kl_loss_scale
-
-        # Logging
-        self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-        self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-        
-        if eul_enabled:
-            self.log('val_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-        
-        if kl_enabled:
-            self.log('val_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-
-        if self.hparams.normalized:
-            y_hat = y_hat * y_std + y_mean
-
-        return y_hat
-    
-    def test_step(self, batch, batch_idx):
-        # Reverse batch if needed
-        x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
-
-        if self.hparams.normalized:
-            x, x_mean, x_std = standardize_displacement_field(x, self.x_mean, self.x_std)
-            y, y_mean, y_std = standardize_displacement_field(y, self.y_mean, self.y_std)
-
-        # Forward pass
-        if self.model_type in VAE_list:
-            y_hat, mu, logvar = self(x)
-
-        elif self.model_type == "SRVAE3D":
-            output = self(x,y)
-
-            loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, self.hparams.kl_loss_scale)
-            y_hat = output.get('y_hat')
-            if self.hparams.normalized:
-                y_hat = y_hat * y_std + y_mean
-            return output.get('y_hat')
-
-        elif self.model_type == "ICdiffusion":
-            sigma_time = get_sigma_time(self.hparams.diffusion_sigma_min, self.hparams.diffusion_sigma_max)
-            sample_time = get_sample_time(self.hparams.diffusion_sampling_eps, self.hparams.diffusion_T)
-
-            B = y.size(dim=0)     
-            #x += self.hparams.diffusion_noise_sigma * torch.randn_like(x).to(x.device)
-            time_steps = sample_time(shape=(B,)).to(x.device)
-            sigmas = sigma_time(time_steps).to(x.device)
-            sigmas = sigmas[:,None,None,None,None]
-            z = torch.randn_like(y,  device=y.device)
-            inputs = torch.cat([y + sigmas * z, x], dim=1)  
-            output = self.model(inputs, time_steps)
-            loss = torch.sum(torch.square(output + z)) /  B
+            # get the gradient
+            loss = F.mse_loss(epsilon_theta, epsilon, reduction="none")
+            loss = torch.sum(loss)
+            self.log('val_epoch_loss', loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             if self.trainer.current_epoch % 1 == 0 and batch_idx == 0:
                 x = x[0:1]
+                y = y[0:1]
                 sampled_ic = self.sample_initial_condition(x)
-                if self.hparams.normalized:
-                    sampled_ic = sampled_ic * y_std + y_mean
+                lag_loss = self.criterion(sampled_ic, y)
+                self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
                 return sampled_ic
-            return None
+            return None            
         else:
             y_hat = self(x)
 
-        # Base lagrangian loss
-        lag_loss = self.criterion(y_hat, y)
-        val_loss = lag_loss
+            # Base lagrangian loss
+            lag_loss = self.criterion(y_hat, y)
+            val_loss = lag_loss
 
-        # Flags for loss conditions
-        eul_enabled = self.hparams.eul_loss
-        kl_enabled = (self.model_type in VAE_list) and self.hparams.kl_loss
+            # Flags for loss conditions
+            eul_enabled = self.hparams.eul_loss
+            kl_enabled = (self.model_type in VAE_list) and self.hparams.kl_loss
 
-        # Apply lagrangian scaling if either auxiliary loss is active
-        if eul_enabled or kl_enabled:
-            val_loss = lag_loss * self.hparams.lag_loss_scale
+            # Apply lagrangian scaling if either auxiliary loss is active
+            if eul_enabled or kl_enabled:
+                val_loss = lag_loss * self.hparams.lag_loss_scale
 
-        # Euler loss component
-        if eul_enabled:
-            eul_y_hat, eul_y = lag2eul([y_hat, y])
-            eul_loss = self.criterion(eul_y_hat, eul_y)
-            val_loss += eul_loss * self.hparams.eul_loss_scale
+            # Euler loss component
+            if eul_enabled:
+                eul_y_hat, eul_y = lag2eul([y_hat, y])
+                eul_loss = self.criterion(eul_y_hat, eul_y)
+                val_loss += eul_loss * self.hparams.eul_loss_scale
 
-        # KL divergence component
-        if kl_enabled:
-            kl_loss = -0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1) 
-            kl_loss = kl_loss.mean()
-            val_loss += kl_loss * self.hparams.kl_loss_scale
+            # KL divergence component
+            if kl_enabled:
+                kl_loss = -0.5 * torch.sum(1 + logvar - mu ** 2 - logvar.exp(), dim=1) 
+                kl_loss = kl_loss.mean()
+                val_loss += kl_loss * self.hparams.kl_loss_scale
 
-        if self.hparams.normalized:
-            y_hat = y_hat * y_std + y_mean
+            # Logging
+            self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            
+            if eul_enabled:
+                self.log('val_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            
+            if kl_enabled:
+                self.log('val_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
-        return y_hat
+            if self.hparams.normalized:
+                y_hat = y_hat * y_std + y_mean
+
+            return y_hat
+
 
     def on_before_zero_grad(self, *args, **kwargs):
         # Update EMA after each training step, post-optimization
@@ -931,12 +924,26 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
     def sample_initial_condition(self, input_data):
         """Sample initial conditions using the reverse diffusion process."""
-        # Placeholder: adapt based on your diffusion process (e.g., VESDE)
-        shape = (1, 3, 32, 32, 32)
-        x = self.sde.prior_sampling(shape).to(self.device)  # Noise as starting point
-        timesteps = self.sde.timesteps.to(self.device)  # Reverse diffusion steps
-        for t in timesteps:
-            t_vec = torch.ones(1, device=self.device) * t
-            model_output = self.model(torch.cat([x, input_data], dim=1), t_vec)
-            x, x_mean = self.sde.update_fn(x, t_vec, model_output=model_output)
-        return x, x_mean
+        if self.model_type == "ICdiffusion":
+            # Placeholder: adapt based on your diffusion process (e.g., VESDE)
+            shape = input_data.shape
+            x = self.sde.prior_sampling(shape).to(self.device)  # Noise as starting point
+            timesteps = self.sde.timesteps.to(self.device)  # Reverse diffusion steps
+            for t in timesteps:
+                t_vec = torch.ones(1, device=self.device) * t
+                model_output = self.model(torch.cat([x, input_data], dim=1), t_vec)
+                x, x_mean = self.sde.update_fn(x, t_vec, model_output=model_output)
+            return x, x_mean
+        elif self.model_type == "DDIM":
+            if self.hparams.sampler == 'DDIM':
+                sampler = DDIMSampler(self.model, beta=self.hparams.ddim_beta, T=self.hparams.diffusion_num_scales)
+            elif self.hparams.sampler == 'DDPM':
+                sampler = DDPMSampler(self.model, beta=self.hparams.ddim_beta, T=self.hparams.diffusion_num_scales)
+            else:
+                raise ValueError(f"Unknown sampler: {args.sampler}")
+            z_t = torch.randn_like(input_data, device=input_data.device)
+            x = sampler(z_t, input_data, only_return_x_0=True)
+            return x
+        else:
+            raise ValueError(f"No sampling function implemented for model type: {self.model_type}")
+

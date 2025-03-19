@@ -30,4 +30,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "eul_loss_trial"
+  name: "eul_loss_3l1e"
