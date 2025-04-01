@@ -149,7 +149,7 @@ class FastPMPile(L.LightningDataModule):
         )
 
 class AugmentedDataset(Dataset):
-    def __init__(self, dataset, augment=False, density=True):
+    def __init__(self, dataset, augment=False, density=False):
         self.dataset = dataset
         self.augment = augment
         self.density = density
@@ -159,62 +159,91 @@ class AugmentedDataset(Dataset):
 
     def __getitem__(self, idx):
         dset = self.dataset[idx]
-        displacement = dset['displacement']
-        displacement = np.einsum('ijkl->lijk', displacement)
 
         if self.density:
             density = dset['density']
-            LPT = np.vstack((displacement[6:9], np.expand_dims(density[2], axis=0))).astype(np.float32)
-            Nbody = np.vstack((displacement[0:3], np.expand_dims(density[0], axis=0))).astype(np.float32)
+            LPT = density[2].unsqueeze(0).numpy().astype(np.float32)
+            Nbody = density[0].unsqueeze(0).numpy().astype(np.float32)
+            if self.augment:
+                # Apply axis flips (no sign changes for density)
+                if np.random.rand() < .5:
+                    LPT = LPT[:, ::-1, ...]  # Flip x-axis
+                    Nbody = Nbody[:, ::-1, ...]
+                if np.random.rand() < .5:
+                    LPT = LPT[:, :, ::-1, ...]  # Flip y-axis
+                    Nbody = Nbody[:, :, ::-1, ...]
+                if np.random.rand() < .5:
+                    LPT = LPT[:, :, :, ::-1]  # Flip z-axis
+                    Nbody = Nbody[:, :, :, ::-1]
+                
+                # Apply axis permutations (no component swaps needed)
+                prand = np.random.rand()
+                if prand < 1./6:
+                    LPT = np.transpose(LPT, axes=(0, 2, 3, 1))  # Permute axes
+                    Nbody = np.transpose(Nbody, axes=(0, 2, 3, 1))
+                elif prand < 2./6:
+                    LPT = np.transpose(LPT, axes=(0, 2, 1, 3))
+                    Nbody = np.transpose(Nbody, axes=(0, 2, 1, 3))
+                elif prand < 3./6:
+                    LPT = np.transpose(LPT, axes=(0, 1, 3, 2))
+                    Nbody = np.transpose(Nbody, axes=(0, 1, 3, 2))
+                elif prand < 4./6:
+                    LPT = np.transpose(LPT, axes=(0, 3, 1, 2))
+                    Nbody = np.transpose(Nbody, axes=(0, 3, 1, 2))
+                elif prand < 5./6:
+                    LPT = np.transpose(LPT, axes=(0, 3, 2, 1))
+                    Nbody = np.transpose(Nbody, axes=(0, 3, 2, 1))
         else:
+            displacement = dset['displacement']
+            displacement = np.einsum('ijkl->lijk', displacement)
             LPT = displacement[6:9].astype(np.float32)
             Nbody = displacement[0:3].astype(np.float32)
-        if self.augment:
-            if np.random.rand() < .5:
-                LPT = LPT[:, ::-1, ...]
-                LPT[0] = -LPT[0]
-                Nbody = Nbody[:, ::-1, ...]
-                Nbody[0] = -Nbody[0]
-            if np.random.rand() < .5:
-                LPT = LPT[:, :, ::-1, ...]
-                LPT[1] = -LPT[1]
-                Nbody = Nbody[:, :, ::-1, ...]
-                Nbody[1] = -Nbody[1]
-            if np.random.rand() < .5:
-                LPT = LPT[:, :, :, ::-1]
-                LPT[2] = -LPT[2]
-                Nbody = Nbody[:, :, :, ::-1]
-                Nbody[2] = -Nbody[2]
-            prand = np.random.rand()
-            if prand < 1./6:
-                LPT = np.transpose(LPT, axes=(0, 2, 3, 1))
-                LPT = swap(LPT, 0, 2)
-                LPT = swap(LPT, 0, 1)
-                Nbody = np.transpose(Nbody, axes=(0, 2, 3, 1))
-                Nbody = swap(Nbody, 0, 2)
-                Nbody = swap(Nbody, 0, 1)
-            elif prand < 2./6:
-                LPT = np.transpose(LPT, axes=(0, 2, 1, 3))
-                LPT = swap(LPT, 0, 1)
-                Nbody = np.transpose(Nbody, axes=(0, 2, 1, 3))
-                Nbody = swap(Nbody, 0, 1)
-            elif prand < 3./6:
-                LPT = np.transpose(LPT, axes=(0, 1, 3, 2))
-                LPT = swap(LPT, 1, 2)
-                Nbody = np.transpose(Nbody, axes=(0, 1, 3, 2))
-                Nbody = swap(Nbody, 1, 2)
-            elif prand < 4./6:
-                LPT = np.transpose(LPT, axes=(0, 3, 1, 2))
-                LPT = swap(LPT, 1, 2)
-                LPT = swap(LPT, 0, 1)
-                Nbody = np.transpose(Nbody, axes=(0, 3, 1, 2))
-                Nbody = swap(Nbody, 1, 2)
-                Nbody = swap(Nbody, 0, 1)
-            elif prand < 5./6:
-                LPT = np.transpose(LPT, axes=(0, 3, 2, 1))
-                LPT = swap(LPT, 0, 2)
-                Nbody = np.transpose(Nbody, axes=(0, 3, 2, 1))
-                Nbody = swap(Nbody, 0, 2)
+            if self.augment:
+                if np.random.rand() < .5:
+                    LPT = LPT[:, ::-1, ...]
+                    LPT[0] = -LPT[0]
+                    Nbody = Nbody[:, ::-1, ...]
+                    Nbody[0] = -Nbody[0]
+                if np.random.rand() < .5:
+                    LPT = LPT[:, :, ::-1, ...]
+                    LPT[1] = -LPT[1]
+                    Nbody = Nbody[:, :, ::-1, ...]
+                    Nbody[1] = -Nbody[1]
+                if np.random.rand() < .5:
+                    LPT = LPT[:, :, :, ::-1]
+                    LPT[2] = -LPT[2]
+                    Nbody = Nbody[:, :, :, ::-1]
+                    Nbody[2] = -Nbody[2]
+                prand = np.random.rand()
+                if prand < 1./6:
+                    LPT = np.transpose(LPT, axes=(0, 2, 3, 1))
+                    LPT = swap(LPT, 0, 2)
+                    LPT = swap(LPT, 0, 1)
+                    Nbody = np.transpose(Nbody, axes=(0, 2, 3, 1))
+                    Nbody = swap(Nbody, 0, 2)
+                    Nbody = swap(Nbody, 0, 1)
+                elif prand < 2./6:
+                    LPT = np.transpose(LPT, axes=(0, 2, 1, 3))
+                    LPT = swap(LPT, 0, 1)
+                    Nbody = np.transpose(Nbody, axes=(0, 2, 1, 3))
+                    Nbody = swap(Nbody, 0, 1)
+                elif prand < 3./6:
+                    LPT = np.transpose(LPT, axes=(0, 1, 3, 2))
+                    LPT = swap(LPT, 1, 2)
+                    Nbody = np.transpose(Nbody, axes=(0, 1, 3, 2))
+                    Nbody = swap(Nbody, 1, 2)
+                elif prand < 4./6:
+                    LPT = np.transpose(LPT, axes=(0, 3, 1, 2))
+                    LPT = swap(LPT, 1, 2)
+                    LPT = swap(LPT, 0, 1)
+                    Nbody = np.transpose(Nbody, axes=(0, 3, 1, 2))
+                    Nbody = swap(Nbody, 1, 2)
+                    Nbody = swap(Nbody, 0, 1)
+                elif prand < 5./6:
+                    LPT = np.transpose(LPT, axes=(0, 3, 2, 1))
+                    LPT = swap(LPT, 0, 2)
+                    Nbody = np.transpose(Nbody, axes=(0, 3, 2, 1))
+                    Nbody = swap(Nbody, 0, 2)
 
         return torch.from_numpy(LPT.copy()), torch.from_numpy(Nbody.copy())
 
@@ -227,7 +256,7 @@ class HuggingfaceLoader(L.LightningDataModule):  # use to load huggingface datas
         batch_size: int = 512,
         num_workers: int = 10,
         augment: bool = True,
-        density: bool = True,
+        density: bool = False,
         **kwargs,
     ) -> None:
         """The `HuggingfaceLoader` class defines a LightningDataModule for

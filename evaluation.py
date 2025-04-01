@@ -16,7 +16,8 @@ class SlicePlotCallback(pl.Callback):
         net2 = net2[0,:,:,:,:].detach().cpu().numpy()
         net3 = net3[0,:,:,:,:].detach().cpu().numpy()
         direction=['x','y','z']
-
+        if axis > net1.shape[0]:
+            axis=0
         # Create the figure and define the grid layout
         fig = plt.figure(figsize=(20, 10))  # Adjusted the figure size for better visualization
         gs = GridSpec(2, 4, height_ratios=[1, 1], width_ratios=[1, 1, 1, 0.1])
@@ -105,6 +106,8 @@ class SlicePlotCallback(pl.Callback):
         direction = ['x', 'y', 'z']
 
         # Select the slice along the specified axis
+        if axis > input_array.shape[0]:
+            axis=0
         input_slice = input_array[axis, :, :, slice_index]
         target_slice = target_array[axis, :, :, slice_index]
         prediction_slice = prediction_array[axis, :, :, slice_index]
@@ -187,9 +190,5 @@ class SlicePlotCallback(pl.Callback):
         prediction_tensor = outputs  # Assuming the output of validation_step is the prediction
 
         if outputs is not None and batch_idx == 0:
-            #self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=0, slice_index=16)
-            #self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=1, slice_index=16)
             self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=2, slice_index=16)
-            #self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=0, slice_index=16)
-            #self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=1, slice_index=16)
             self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=2, slice_index=16)

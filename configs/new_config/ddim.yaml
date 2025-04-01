@@ -6,6 +6,8 @@ model:
   #lr_scheduler: 'Cosine'
   #lr_warmup: 1000
   num_samples: 27000 # 30000 * spilt_ratio
+  normalized: True # if True, normalize the input
+  normalized_scale: 128.0
   model: 'DDIM' # ['default', 'UNet', 'VAE']
   reversed: False # if True, predict ZA from FastPM
   diffusion_num_scales: 1000 # num of steps in reverse diffusion

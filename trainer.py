@@ -6,7 +6,7 @@ import yaml
 import argparse
 import wandb
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from evaluation import SlicePlotCallback
 import os
 # Function to load the YAML configuration file
@@ -92,7 +92,9 @@ def main():
     )
 
     sliceplot_callback = SlicePlotCallback()
-    
+
+    lr_monitor = LearningRateMonitor(logging_interval='step')
+
     # Initialize the PyTorch Lightning trainer
     strategy = 'ddp' if (gpus is not None and gpus > 1) else 'auto'
     trainer = pl.Trainer(
@@ -102,7 +104,7 @@ def main():
         logger=wandb_logger,
         num_nodes=num_nodes,
         strategy=strategy,
-        callbacks=[checkpoint_callback, sliceplot_callback],
+        callbacks=[checkpoint_callback, sliceplot_callback, lr_monitor],
         log_every_n_steps=10,
         gradient_clip_val=gradient_clip_val,
     )

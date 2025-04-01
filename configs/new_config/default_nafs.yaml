@@ -1,7 +1,9 @@
 model:
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-4
+  learning_rate: 1.0e-3
+  weight_decay: 0
   optimizer: 'AdamW' # ['Adam', 'AdamW']
+  beta1: 0.9
+  beta2: 0.9
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
   #lr_warmup: 1000 # needed if use cosine lr_scheduler
   #lr_cosine_period: 24000 # match dataset_size/batch_size*max_epochs
@@ -9,24 +11,30 @@ model:
   num_layers: 4 # layer number of UNet
   base_filters: 64 # base filter after first convolutional layer
   blocks_per_layer: 2 # number of convolutional blocks in each layer
-  init_dim: 1 # 3 for without density field in tensor
+  init_dim: 3 # 3 for without density field in tensor
   reversed: False # if True, predict ZA from FastPM
+  normalized: False
   eul_loss: False # if True, use Eulerian loss
   eul_loss_scale: 1.0 # scale factor for Eulerian loss
+  lag_loss_scale: 1.0 # scale factor for Lagrangian loss
 
 data:
   dataset_type: 'huggingface' # ['raw', 'huggingface']
   dataset_path: '/home/user/ckwan1/ml/huggingface_dataset'
-  batch_size: 128
+  batch_size: 256
   num_workers: 16
   augment: True # if True, use data augmentation
-  density: True # if True, use density field in tensor
+  density: False # if True, use density field in tensor
 
 trainer:
   max_epochs: 1000
   gpus: 4
   num_nodes: 1
-  
+  ckpt_path: "/home/user/ckwan1/ml/new_checkpoints/default_nafs/last.ckpt"
+
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
+  name: "default_nafs"
+  id : "qx11n52m"
+  resume: "must"

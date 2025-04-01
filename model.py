@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import lightning.pytorch as pl
-from periodic_padding import periodic_padding_3d
 from lag2eul import lag2eul
+from model_backbone import Lpt2NbodyNet, UNet3D, UNet3DwithRes, VAE3D, VAE3DwithRes, AE3DwithRes, BasicBlock
 from magvit import MagVitAE3D, MagVitVAE3D
 from srvae import srVAE3D
 from srvae_prior import *
@@ -12,442 +12,10 @@ from score_vesde import VESDE, get_sigma_time, get_sample_time
 from torch_ema import ExponentialMovingAverage
 from ddim_sampler import DDIMSampler, DDPMSampler, extract
 from ddim_model import ddim_UNet3D
-
+from naf_net import NAFNet3D, NAFNet3D_base
+from torchmetrics.image import PeakSignalNoiseRatio
 torch.backends.cudnn.benchmark = True
 VAE_list = ["VAE", "VAEwithRes", "MagVitVAE3D"]
-
-def crop_tensor(x):
-	x = x.narrow(2,1,x.shape[2]-3).narrow(3,1,x.shape[3]-3).narrow(4,1,x.shape[4]-3).contiguous()
-	return x
-
-def conv3x3(inplane,outplane, stride=1,padding=0):
-	return nn.Conv3d(inplane,outplane,kernel_size=3,stride=stride,padding=padding,bias=True)
-
-import torch
-
-def cyclical_annealing(step, steps_per_cycle, ratio=0.5):
-    """
-    Calculate the KL weight using a cyclical annealing schedule.
-
-    Args:
-        step (int): Current training step.
-        steps_per_cycle (int): Number of steps in one complete cycle.
-        ratio (float): Proportion of the cycle used for increasing the KL weight.
-
-    Returns:
-        torch.Tensor: KL weight (beta) for the current step.
-    """
-    cycle_position = step % steps_per_cycle
-    cycle_progress = cycle_position / steps_per_cycle
-
-    if cycle_progress < ratio:
-        return 0.5 * (1 - torch.cos(torch.tensor(cycle_progress / ratio * torch.pi)))
-    else:
-        return torch.tensor(1.0)
-
-# Assuming conv3x3 and BasicBlock are defined as in your original code.
-class BasicBlock(nn.Module):
-	def __init__(self,inplane,outplane,stride = 1):
-		super(BasicBlock, self).__init__()
-		self.conv1 = conv3x3(inplane,outplane,padding=0,stride=stride)
-		self.bn1 = nn.BatchNorm3d(outplane)
-		self.relu = nn.ReLU(inplace=True)
-
-	def forward(self,x):
-		x = periodic_padding_3d(x,pad=(1,1,1,1,1,1))
-		out = self.conv1(x)
-		out = self.bn1(out)
-		out = self.relu(out)
-		return out
-
-class ResBlock(nn.Module):
-    def __init__(self,inplane,outplane,stride = 1):
-        super(ResBlock, self).__init__()
-        self.conv1 = conv3x3(inplane,outplane,padding=0,stride=stride)
-        self.bn1 = nn.BatchNorm3d(outplane)
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self,x):
-        orig_x = x
-        x = periodic_padding_3d(x,pad=(1,1,1,1,1,1))
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        return out + orig_x
-    
-class Lpt2NbodyNet(nn.Module):
-    def __init__(self, block, init_dim=4):
-        super(Lpt2NbodyNet, self).__init__()
-        self.layer1 = self._make_layer(block, init_dim, 64, blocks=2, stride=1)
-        self.layer2 = self._make_layer(block, 64, 128, blocks=1, stride=2)
-        self.layer3 = self._make_layer(block, 128, 128, blocks=2, stride=1)
-        self.layer4 = self._make_layer(block, 128, 256, blocks=1, stride=2)
-        self.layer5 = self._make_layer(block, 256, 256, blocks=2, stride=1)
-        self.deconv1 = nn.ConvTranspose3d(256, 128, 3, stride=2, padding=0)
-        self.deconv_batchnorm1 = nn.BatchNorm3d(num_features=128, momentum=0.1)
-        self.layer6 = self._make_layer(block, 256, 128, blocks=2, stride=1)
-        self.deconv2 = nn.ConvTranspose3d(128, 64, 3, stride=2, padding=0)
-        self.deconv_batchnorm2 = nn.BatchNorm3d(num_features=64, momentum=0.1)
-        self.layer7 = self._make_layer(block, 128, 64, blocks=2, stride=1)
-        self.deconv4 = nn.ConvTranspose3d(64, init_dim, 1, stride=1, padding=0)
-
-    def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
-        layers = []
-        for _ in range(blocks):
-            layers.append(block(inplanes, outplanes, stride=stride))
-            inplanes = outplanes
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        x1 = self.layer1(x)
-        x = self.layer2(x1)
-        x2 = self.layer3(x)
-        x = self.layer4(x2)
-        x = self.layer5(x)
-        x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))
-        x = nn.functional.relu(self.deconv_batchnorm1(crop_tensor(self.deconv1(x))), inplace=True)
-        x = torch.cat((x, x2), dim=1)
-        x = self.layer6(x)
-        x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))
-        x = nn.functional.relu(self.deconv_batchnorm2(crop_tensor(self.deconv2(x))), inplace=True)
-        x = torch.cat((x, x1), dim=1)
-        x = self.layer7(x)
-        x = self.deconv4(x)
-        return x
-    
-class UNet3D(nn.Module):  
-    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2,init_dim=3):
-        super(UNet3D, self).__init__()
-        self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
-        
-        # Encoder path
-        init_channels = init_dim
-        out_channels = base_filters
-        self.init_conv = self._make_layer(block, init_channels, out_channels, blocks=blocks_per_layer, stride=1)
-        for _ in range(num_layers):
-            self.encoders.append(self._make_layer(block, out_channels, out_channels*2, blocks=1, stride=2))
-            self.encoders.append(self._make_layer(block, out_channels*2, out_channels*2, blocks=blocks_per_layer, stride=1))
-            out_channels *= 2
-
-        # Decoder path
-        for _ in range(num_layers):
-            self.decoders.append(nn.ConvTranspose3d(out_channels, out_channels//2, kernel_size=3, stride=2, padding=0))
-            self.decoders.append(self._make_layer(block, out_channels, out_channels//2, blocks=blocks_per_layer, stride=1))
-            out_channels //= 2
-
-        self.final_conv = nn.ConvTranspose3d(out_channels, init_dim, 1, stride=1, padding=0)
-
-        # Predefine BatchNorm3d and ReLU layers for each decoder step
-        #self.batch_norms = nn.ModuleList()
-        #self.relu = nn.ReLU(inplace=True)
-        #for i in range(num_layers):
-        #    self.batch_norms.insert(0, nn.BatchNorm3d(base_filters * (2 ** i)))  # Adjust channels accordingly
-
-    def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
-        layers = []
-        for _ in range(blocks):
-            layers.append(block(inplanes, outplanes, stride=stride))
-            inplanes = outplanes
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        encoder_outputs = []
-
-        x = self.init_conv(x)
-        encoder_outputs.append(x)
-        
-        # Encoding path
-        for i in range(0, len(self.encoders), 2):
-            x = self.encoders[i](x)  # Compression layer
-            x = self.encoders[i + 1](x)  # Non-compression layer
-            encoder_outputs.append(x)
-
-        # Decoding path
-        for i in range(0, len(self.decoders), 2):
-            x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))  # Assuming this is a custom function
-            x = self.decoders[i](x)  # Transpose Conv layer
-            x = crop_tensor(x)  # Assuming this is a custom function to crop the tensor
-            
-            # Use the pre-defined BatchNorm3d and ReLU layers
-            #x = self.batch_norms[i // 2](x)  # BatchNorm
-            #x = nn.ReLU(inplace=True)(x)  # ReLU
-            
-            # Skip connection with encoder outputs
-            x = torch.cat((x, encoder_outputs[len(encoder_outputs)-2-i//2]), dim=1)  # Skip connection
-            
-            x = self.decoders[i + 1](x)  # Non-compression layer
-
-        # Final 1x1 Conv
-        x = self.final_conv(x)
-        return x
-
-class UNet3DwithRes(nn.Module):  
-    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2,init_dim=3):
-        super(UNet3DwithRes, self).__init__()
-        self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
-        
-        # Encoder path
-        init_channels = init_dim
-        out_channels = base_filters
-        self.init_conv = self._make_layer(block, init_channels, out_channels, blocks=blocks_per_layer, stride=1)
-        for _ in range(num_layers):
-            self.encoders.append(self._make_layer(block, out_channels, out_channels*2, blocks=1, stride=2))
-            self.encoders.append(self._make_layer(block, out_channels*2, out_channels*2, blocks=blocks_per_layer, stride=1))
-            out_channels *= 2
-
-        # Decoder path
-        for _ in range(num_layers):
-            self.decoders.append(nn.ConvTranspose3d(out_channels, out_channels//2, kernel_size=3, stride=2, padding=0))
-            self.decoders.append(self._make_layer(block, out_channels, out_channels//2, blocks=blocks_per_layer, stride=1))
-            out_channels //= 2
-
-        self.final_conv = nn.ConvTranspose3d(out_channels, init_dim, 1, stride=1, padding=0)
-
-    def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
-        layers = []
-        for _ in range(blocks):
-            if inplanes == outplanes:
-                layers.append(ResBlock(inplanes, outplanes, stride=stride))
-            else:
-                layers.append(block(inplanes, outplanes, stride=stride))
-            inplanes = outplanes
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        encoder_outputs = []
-
-        x = self.init_conv(x)
-        encoder_outputs.append(x)
-        
-        # Encoding path
-        for i in range(0, len(self.encoders), 2):
-            x = self.encoders[i](x)  # Compression layer
-            x = self.encoders[i + 1](x)  # Non-compression layer
-            encoder_outputs.append(x)
-
-        # Decoding path
-        for i in range(0, len(self.decoders), 2):
-            x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))  # Assuming this is a custom function
-            x = self.decoders[i](x)  # Transpose Conv layer
-            x = crop_tensor(x)  # Assuming this is a custom function to crop the tensor
-            
-            x = torch.cat((x, encoder_outputs[len(encoder_outputs)-2-i//2]), dim=1)  # Skip connection
-            
-            x = self.decoders[i + 1](x)  # Non-compression layer
-
-        # Final 1x1 Conv
-        x = self.final_conv(x)
-        return x
-
-class VAE3D(nn.Module):
-    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2, 
-                 init_dim=3, latent_dim=32):
-        super(VAE3D, self).__init__()
-        self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
-        
-        # Encoder path
-        init_channels = init_dim
-        out_channels = base_filters
-        self.init_conv = self._make_layer(block, init_channels, out_channels, 
-                                        blocks=blocks_per_layer, stride=1)
-        for _ in range(num_layers):
-            self.encoders.append(self._make_layer(block, out_channels, out_channels*2, 
-                                                blocks=1, stride=2))
-            self.encoders.append(self._make_layer(block, out_channels*2, out_channels*2, 
-                                                blocks=blocks_per_layer, stride=1))
-            out_channels *= 2
-
-        # Variational bottleneck
-        self.conv_mu = nn.Conv3d(out_channels, latent_dim, kernel_size=1)
-        self.conv_logvar = nn.Conv3d(out_channels, latent_dim, kernel_size=1)
-        self.conv_decode = nn.Conv3d(latent_dim, out_channels, kernel_size=1)
-
-        # Decoder path (no skip connections)
-        for _ in range(num_layers):
-            self.decoders.append(nn.ConvTranspose3d(out_channels, out_channels//2, 
-                                                  kernel_size=3, stride=2, padding=0))
-            self.decoders.append(self._make_layer(block, out_channels//2, out_channels//2,
-                                                blocks=blocks_per_layer, stride=1))
-            out_channels //= 2
-
-        self.final_conv = nn.Conv3d(out_channels, init_dim, kernel_size=1)
-
-    def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
-        layers = []
-        for _ in range(blocks):
-            layers.append(block(inplanes, outplanes, stride=stride))
-            inplanes = outplanes
-        return nn.Sequential(*layers)
-
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-
-    def forward(self, x):
-        # Encoder
-        x = self.init_conv(x)
-        for i in range(0, len(self.encoders), 2):
-            x = self.encoders[i](x)
-            x = self.encoders[i+1](x)
-
-        # Variational bottleneck
-        mu = self.conv_mu(x)
-        logvar = self.conv_logvar(x)
-        z = self.reparameterize(mu, logvar)
-        x = self.conv_decode(z)
-
-        # Decoder
-        for i in range(0, len(self.decoders), 2):
-            x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))  # Your custom padding
-            x = self.decoders[i](x)  # Transposed convolution
-            x = crop_tensor(x)  # Your custom cropping
-            x = self.decoders[i+1](x)  # Regular convolution block
-
-        x = self.final_conv(x)
-        return x, mu, logvar
-
-class VAE3DwithRes(nn.Module):
-    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2, 
-                 init_dim=3, latent_dim=32):
-        super(VAE3DwithRes, self).__init__()
-        self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
-        
-        # Encoder path
-        init_channels = init_dim
-        out_channels = base_filters
-        self.init_conv = self._make_layer(block, init_channels, out_channels, 
-                                        blocks=blocks_per_layer, stride=1)
-        for _ in range(num_layers):
-            self.encoders.append(self._make_layer(block, out_channels, out_channels*2, 
-                                                blocks=1, stride=2))
-            self.encoders.append(self._make_layer(block, out_channels*2, out_channels*2, 
-                                                blocks=blocks_per_layer, stride=1))
-            out_channels *= 2
-
-        # Variational bottleneck
-        self.conv_mu = nn.Conv3d(out_channels, latent_dim, kernel_size=1)
-        self.conv_logvar = nn.Conv3d(out_channels, latent_dim, kernel_size=1)
-        self.conv_decode = nn.Conv3d(latent_dim, out_channels, kernel_size=1)
-
-        # Decoder path (no skip connections)
-        for _ in range(num_layers):
-            self.decoders.append(nn.ConvTranspose3d(out_channels, out_channels//2, 
-                                                  kernel_size=3, stride=2, padding=0))
-            self.decoders.append(self._make_layer(block, out_channels//2, out_channels//2,
-                                                blocks=blocks_per_layer, stride=1))
-            out_channels //= 2
-
-        self.final_conv = nn.Conv3d(out_channels, init_dim, kernel_size=1)
-
-    def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
-        layers = []
-        for _ in range(blocks):
-            if inplanes == outplanes:
-                layers.append(ResBlock(inplanes, outplanes, stride=stride))
-            else:
-                layers.append(block(inplanes, outplanes, stride=stride))
-            inplanes = outplanes
-        return nn.Sequential(*layers)
-
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-
-    def forward(self, x):
-        # Encoder
-        x = self.init_conv(x)
-        for i in range(0, len(self.encoders), 2):
-            x = self.encoders[i](x)
-            x = self.encoders[i+1](x)
-
-        # Variational bottleneck
-        mu = self.conv_mu(x)
-        logvar = self.conv_logvar(x)
-        z = self.reparameterize(mu, logvar)
-        x = self.conv_decode(z)
-
-        # Decoder
-        for i in range(0, len(self.decoders), 2):
-            x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))  # Your custom padding
-            x = self.decoders[i](x)  # Transposed convolution
-            x = crop_tensor(x)  # Your custom cropping
-            x = self.decoders[i+1](x)  # Regular convolution block
-
-        x = self.final_conv(x)
-        return x, mu, logvar
-
-class AE3DwithRes(nn.Module):
-    def __init__(self, block, num_layers=2, base_filters=64, blocks_per_layer=2, 
-                 init_dim=3, latent_dim=32):
-        super(AE3DwithRes, self).__init__()
-        self.encoders = nn.ModuleList()
-        self.decoders = nn.ModuleList()
-        
-        # Encoder path
-        init_channels = init_dim
-        out_channels = base_filters
-        self.init_conv = self._make_layer(block, init_channels, out_channels, 
-                                        blocks=blocks_per_layer, stride=1)
-        for _ in range(num_layers):
-            self.encoders.append(self._make_layer(block, out_channels, out_channels*2, 
-                                                blocks=1, stride=2))
-            self.encoders.append(self._make_layer(block, out_channels*2, out_channels*2, 
-                                                blocks=blocks_per_layer, stride=1))
-            out_channels *= 2
-
-        # Variational bottleneck
-        self.conv_encode = nn.Conv3d(out_channels, latent_dim, kernel_size=1)
-        self.conv_decode = nn.Conv3d(latent_dim, out_channels, kernel_size=1)
-
-        # Decoder path (no skip connections)
-        for _ in range(num_layers):
-            self.decoders.append(nn.ConvTranspose3d(out_channels, out_channels//2, 
-                                                  kernel_size=3, stride=2, padding=0))
-            self.decoders.append(self._make_layer(block, out_channels//2, out_channels//2,
-                                                blocks=blocks_per_layer, stride=1))
-            out_channels //= 2
-
-        self.final_conv = nn.Conv3d(out_channels, init_dim, kernel_size=1)
-
-    def _make_layer(self, block, inplanes, outplanes, blocks, stride=1):
-        layers = []
-        for _ in range(blocks):
-            if inplanes == outplanes:
-                layers.append(ResBlock(inplanes, outplanes, stride=stride))
-            else:
-                layers.append(block(inplanes, outplanes, stride=stride))
-            inplanes = outplanes
-        return nn.Sequential(*layers)
-
-
-
-    def forward(self, x):
-        # Encoder
-        x = self.init_conv(x)
-        for i in range(0, len(self.encoders), 2):
-            x = self.encoders[i](x)
-            x = self.encoders[i+1](x)
-
-        # Variational bottleneck
-        z = self.conv_encode(x)
-
-        x = self.conv_decode(z)
-
-        # Decoder
-        for i in range(0, len(self.decoders), 2):
-            x = periodic_padding_3d(x, pad=(0, 1, 0, 1, 0, 1))  # Your custom padding
-            x = self.decoders[i](x)  # Transposed convolution
-            x = crop_tensor(x)  # Your custom cropping
-            x = self.decoders[i+1](x)  # Regular convolution block
-
-        x = self.final_conv(x)
-        return x
     
 # LightningModule wrapping the Lpt2NbodyNet
 class Lpt2NbodyNetLightning(pl.LightningModule):
@@ -459,6 +27,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 optimizer: str = 'Adam',
                 lr_scheduler: str = 'Constant',
                 lr_warmup: int = 1000,
+                lr_cosine_period = None,
                 num_samples: int = 30000,
                 batch_size: int = 128,
                 max_epochs: int = 500,
@@ -470,10 +39,11 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 latent_dim: int = 32,
                 reversed: bool = False,
                 normalized: bool = False,
-                normalized_mean_za = None,
-                normalized_std_za = None,
-                normalized_mean_fastpm = None,
-                normalized_std_fastpm = None,
+                normalized_scale: float = None,
+                standardized: bool = False,
+                compressed: bool = False,
+                compression_type: str = 'arcsinh',
+                compression_factor: float = 24,
                 eul_loss: bool = False,
                 kl_loss: bool = True,
                 kl_loss_annealing: bool = True,
@@ -501,19 +71,18 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 ema_rate: float = 0.999,
                 ddim_beta = [0.0001, 0.02],
                 sampler: str = 'DDIM',
+                naf_middle_blk_num = 12,
+                naf_enc_blk_nums = [2, 2, 4, 8],
+                naf_dec_blk_nums = [2, 2, 2, 2],
+                naf_dw_expand = 2,
+                naf_ffn_expand = 2,
                 **kwargs
                 ):
         super(Lpt2NbodyNetLightning, self).__init__()
 
         self.save_hyperparameters(ignore=['kwargs'])  # This will save all init args except kwargs
         self.model_type = model
-        self.x_mean = normalized_mean_za
-        self.x_std = normalized_std_za
-        self.y_mean = normalized_mean_fastpm
-        self.y_std = normalized_std_fastpm
-        if reversed:
-            self.x_mean, self.y_mean = self.y_mean, self.x_mean
-            self.x_std, self.y_std = self.y_std, self.x_std
+
         if model == "default":
             self.model = Lpt2NbodyNet(BasicBlock,init_dim=self.hparams.init_dim)
         elif model == "UNet":
@@ -546,7 +115,15 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                             u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=StandardNormal)
             elif self.hparams.srvae_prior == 'RealNVP':
                 self.model = srVAE3D(x_shape = (3, 32, 32, 32), y_shape = (3, 32, 32, 32), 
-                            u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=RealNVP)  
+                            u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=RealNVP)
+        elif model == "NAFNet3D_base":
+                self.model = NAFNet3D_base(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
+                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand)
+
+        elif model == "NAFNet3D":
+                self.model = NAFNet3D(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
+                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums) 
+
         elif model == "ICdiffusion":
             self.model = UNet3DModel(
                     act_f=score_act_f,  # From "model.nonlinearity": "swish"
@@ -591,10 +168,17 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.register_buffer("noise_rate", torch.sqrt(1.0 - alpha_t_bar))
 
         self.criterion = nn.MSELoss()  
+        self.psnr = PeakSignalNoiseRatio(data_range=128)
 
     def forward(self, x, y=None):
         if y is not None:
             return self.model(x,y)
+        if self.hparams.normalized:
+            x, _ = self.normalize_displacement_field(x, self.hparams.normalized_scale)
+        if self.hparams.standardized:
+            x, _, _ = self.standardize_displacement_field(x)
+        if self.hparams.compressed:
+            x = self.range_compression(x, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
         return self.model(x)
 
     def on_fit_start(self):
@@ -606,8 +190,16 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
         if self.hparams.normalized:
-            x, x_mean, x_std = standardize_displacement_field(x,self.x_mean,self.x_std)
-            y, y_mean, y_std = standardize_displacement_field(y,self.y_mean,self.y_std)
+            x, x_scale = self.normalize_displacement_field(x, self.hparams.normalized_scale)
+            y, y_scale = self.normalize_displacement_field(y, self.hparams.normalized_scale)
+
+        if self.hparams.standardized:
+            x, x_mean, x_std = self.standardize_displacement_field(x)
+            y, y_mean, y_std = self.standardize_displacement_field(y)
+        
+        if self.hparams.compressed:
+            x = self.range_compression(x, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+            y = self.range_compression(y, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
 
         # Forward pass
         if self.model_type in VAE_list:
@@ -615,6 +207,22 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
         elif self.model_type == "SRVAE3D":
             output = self(x,y)
+            y_hat = output.get('y_hat')
+
+            if self.hparams.normalized:
+                x = x * x_scale
+                y = y * y_scale
+                y_hat = y_hat * y_scale
+
+            if self.hparams.standardized:
+                x = x * x_std + x_mean
+                y = y * y_std + y_mean
+                y_hat = y_hat * y_std + y_mean
+
+            if self.hparams.compressed:
+                x = self.reverse_range_compression(x, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+                y = self.reverse_range_compression(y, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+                y_hat = self.reverse_range_compression(y_hat, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
 
             if self.hparams.kl_loss_annealing:
                 # Calculate current training step
@@ -681,7 +289,19 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
         else:
             y_hat = self(x)
-            
+
+            if self.hparams.normalized:
+                y = y * y_scale
+                y_hat = y_hat * y_scale
+
+            if self.hparams.standardized:
+                y = y * y_std + y_mean
+                y_hat = y_hat * y_std + y_mean
+
+            if self.hparams.compressed:
+                y = self.reverse_range_compression(y, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+                y_hat = self.reverse_range_compression(y_hat, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+
             # Base lagrangian loss
             lag_loss = self.criterion(y_hat, y)
             train_loss = lag_loss
@@ -721,6 +341,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 train_loss += kl_loss * kl_weight 
 
             # Logging
+            train_psnr = self.psnr(y_hat, y)
+            self.log('train_batch_psnr', train_psnr, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('train_epoch_psnr', train_psnr, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+
             self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True, sync_dist=True)
             self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
@@ -738,15 +362,39 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
         if self.hparams.normalized:
-            x, x_mean, x_std = standardize_displacement_field(x, self.x_mean, self.x_std)
-            y, y_mean, y_std = standardize_displacement_field(y, self.y_mean, self.y_std)
-
+            x, x_scale = self.normalize_displacement_field(x, self.hparams.normalized_scale)
+            y, y_scale = self.normalize_displacement_field(y, self.hparams.normalized_scale)
+            
+        if self.hparams.standardized:
+            x, x_mean, x_std = self.standardize_displacement_field(x)
+            y, y_mean, y_std = self.standardize_displacement_field(y)
+        
+        if self.hparams.compressed:
+            x = self.range_compression(x, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+            y = self.range_compression(y, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+            
         # Forward pass
         if self.model_type in VAE_list:
             y_hat, mu, logvar = self(x)
 
         elif self.model_type == "SRVAE3D":
             output = self(x,y)
+            y_hat = output.get('y_hat')
+
+            if self.hparams.normalized:
+                x = x * x_scale
+                y = y * y_scale
+                y_hat = y_hat * y_scale
+
+            if self.hparams.standardized:
+                x = x * x_std + x_mean
+                y = y * y_std + y_mean
+                y_hat = y_hat * y_std + y_mean
+
+            if self.hparams.compressed:
+                x = self.reverse_range_compression(x, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+                y = self.reverse_range_compression(y, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+                y_hat = self.reverse_range_compression(y_hat, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
 
             loss, diagnostics = self.model.calculate_elbo(x, output, self.hparams.lag_loss_scale, self.hparams.recon_loss_scale, self.hparams.kl_loss_scale)
 
@@ -759,9 +407,6 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.log('val_epoch_kl_loss_u', diagnostics['KL_u'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('val_epoch_kl_loss_z', diagnostics['KL_z'], on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
-            y_hat = output.get('y_hat')
-            if self.hparams.normalized:
-                y_hat = y_hat * y_std + y_mean
             return output.get('y_hat')
 
         elif self.model_type == "ICdiffusion":
@@ -783,10 +428,22 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 x = x[0:1]
                 y = y[0:1]
                 sampled_ic, _ = self.sample_initial_condition(x)
+
                 if self.hparams.normalized:
+                    y = y * y_scale
+                    sampled_ic = sampled_ic * y_scale
+
+                if self.hparams.standardized:
                     y = y * y_std + y_mean
                     sampled_ic = sampled_ic * y_std + y_mean
+
+                if self.hparams.compressed:
+                    y = self.reverse_range_compression(y, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+                    sampled_ic = self.reverse_range_compression(sampled_ic, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+
                 lag_loss = self.criterion(sampled_ic, y)
+                val_psnr = self.psnr(sampled_ic, y)
+                self.log('val_epoch_psnr', val_psnr, on_step=False, on_epoch=True, logger=True, sync_dist=True)
                 self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
                 return sampled_ic
             return None
@@ -810,13 +467,40 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             if self.trainer.current_epoch % 1 == 0 and batch_idx == 0:
                 x = x[0:1]
                 y = y[0:1]
-                sampled_ic = self.sample_initial_condition(x)
+                sampled_ic = self.sample_initial_condition(x, self.hparams.sampler)
+
+                if self.hparams.normalized:
+                    y = y * y_scale
+                    sampled_ic = sampled_ic * y_scale
+
+                if self.hparams.standardized:
+                    y = y * y_std + y_mean
+                    sampled_ic = sampled_ic * y_std + y_mean
+
+                if self.hparams.compressed:
+                    y = self.reverse_range_compression(y, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+                    sampled_ic = self.reverse_range_compression(sampled_ic, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+
                 lag_loss = self.criterion(sampled_ic, y)
+                val_psnr = self.psnr(sampled_ic, y)
+                self.log('val_epoch_psnr', val_psnr, on_step=False, on_epoch=True, logger=True, sync_dist=True)
                 self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
                 return sampled_ic
             return None            
         else:
             y_hat = self(x)
+
+            if self.hparams.normalized:
+                y = y * y_scale
+                y_hat = y_hat * y_scale
+
+            if self.hparams.standardized:
+                y = y * y_std + y_mean
+                y_hat = y_hat * y_std + y_mean
+
+            if self.hparams.compressed:
+                y = self.reverse_range_compression(y, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
+                y_hat = self.reverse_range_compression(y_hat, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
 
             # Base lagrangian loss
             lag_loss = self.criterion(y_hat, y)
@@ -843,6 +527,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 val_loss += kl_loss * self.hparams.kl_loss_scale
 
             # Logging
+            val_psnr = self.psnr(y_hat, y)
+            self.log('val_batch_psnr', val_psnr, on_step=True, on_epoch=False, logger=True, sync_dist=True)
+            self.log('val_epoch_psnr', val_psnr, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+
             self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             
@@ -852,11 +540,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             if kl_enabled:
                 self.log('val_epoch_kl_loss', kl_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
-            if self.hparams.normalized:
-                y_hat = y_hat * y_std + y_mean
-
             return y_hat
-
 
     def on_before_zero_grad(self, *args, **kwargs):
         # Update EMA after each training step, post-optimization
@@ -875,7 +559,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             return optimizer
 
         elif self.hparams.lr_scheduler == 'Cosine':
-            total_steps = self.hparams.max_epochs * (self.hparams.num_samples // self.hparams.batch_size)
+            if self.hparams.lr_cosine_period == None:
+                total_steps = self.hparams.max_epochs * (self.hparams.num_samples // self.hparams.batch_size)
+            else:
+                total_steps = self.hparams.lr_cosine_period
             T_max = total_steps - self.hparams.lr_warmup
             lr_scheduler = torch.optim.lr_scheduler.SequentialLR(
             optimizer,
@@ -901,7 +588,30 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
         return optimizer
 
-    def standardize_displacement_field(data, mean=None, std=None):
+    def normalize_displacement_field(self, displacement, scale=None):
+        """
+        Normalize the 5D displacement tensor [B, C, H, W, D] such that 
+        the maximum displacement magnitude across the entire tensor becomes 1.
+        This operation multiplies each displacement vector by the same factor,
+        thereby preserving its direction.
+        
+        Returns:
+        normalized: the normalized tensor
+        scale: the global scaling factor (the max norm)
+        """
+        # Compute the L2 norm for each displacement vector (over the channel dimension)
+        # Result shape: [B, H, W, D]
+        if scale is  None:
+            norms = displacement.norm(p=2, dim=1)
+            
+            # Find the maximum displacement magnitude (a scalar)
+            scale = norms.max()
+        
+        # Normalize: scale every displacement vector by the same factor
+        normalized = displacement / scale
+        return normalized, scale
+
+    def standardize_displacement_field(self, data):
         """
         Standardize a 3D displacement field tensor isotropically across all channels.
         
@@ -911,18 +621,39 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             std: Optional scalar with precomputed global std
             
         Returns:
-            standardized_data: Normalized tensor
+            standardized_data: standardized tensor
             mean: Global mean (computed if not provided)
             std: Global std (computed if not provided)
         """
-        if mean is None or std is None:
             # Compute global mean and std across all dimensions (B, C, D, H, W)
-            mean = data.mean()
-            std = data.std()
+        mean = data.mean()
+        std = data.std()
         standardized_data = (data - mean) / (std + 1e-8)
         return standardized_data, mean, std
 
-    def sample_initial_condition(self, input_data):
+    def range_compression(self, sample, div_factor: float = 24, function: str = 'arcsinh', epsilon: float = 1e-8):
+        """Applies compression on the input."""
+        if function == 'arcsinh':
+            return torch.arcsinh(sample / div_factor)*div_factor
+        if function == 'tanh':
+            return torch.tanh(sample / div_factor)*div_factor
+        if function == 'sqrt':
+            return torch.sign(sample)*torch.sqrt(torch.abs(sample + epsilon) / div_factor)*div_factor
+        else:
+            return sample  
+
+    def reverse_range_compression(self, sample, div_factor: float = 24, function: str = 'arcsinh', epsilon: float = 1e-8):
+        """Undos compression on the output."""
+        if function == 'arcsinh':
+            return torch.sinh(sample / div_factor)*div_factor
+        if function == 'tanh':
+            return torch.arctanh(torch.clamp((sample / div_factor),min=-0.999,max=0.999))*div_factor
+        if function == 'sqrt':
+            return torch.sign(sample)*torch.square((sample - epsilon) / div_factor)*div_factor  
+        else:
+            return sample
+
+    def sample_initial_condition(self, input_data, diffusion_sampler='DDIM'):
         """Sample initial conditions using the reverse diffusion process."""
         if self.model_type == "ICdiffusion":
             # Placeholder: adapt based on your diffusion process (e.g., VESDE)
@@ -933,11 +664,11 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 t_vec = torch.ones(1, device=self.device) * t
                 model_output = self.model(torch.cat([x, input_data], dim=1), t_vec)
                 x, x_mean = self.sde.update_fn(x, t_vec, model_output=model_output)
-            return x, x_mean
+            return x_mean
         elif self.model_type == "DDIM":
-            if self.hparams.sampler == 'DDIM':
+            if diffusion_sampler == 'DDIM':
                 sampler = DDIMSampler(self.model, beta=self.hparams.ddim_beta, T=self.hparams.diffusion_num_scales)
-            elif self.hparams.sampler == 'DDPM':
+            elif diffusion_sampler == 'DDPM':
                 sampler = DDPMSampler(self.model, beta=self.hparams.ddim_beta, T=self.hparams.diffusion_num_scales)
             else:
                 raise ValueError(f"Unknown sampler: {args.sampler}")

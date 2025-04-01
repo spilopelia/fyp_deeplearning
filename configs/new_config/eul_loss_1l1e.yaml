@@ -16,6 +16,7 @@ model:
   lag_loss_scale: 1.0 # scale factor for Lagrangian loss
 
 data:
+  dataset_type: 'huggingface' # ['raw', 'huggingface']
   dataset_path: '/home/user/ckwan1/ml/huggingface_dataset'
   batch_size: 128
   num_workers: 16
@@ -26,8 +27,11 @@ trainer:
   max_epochs: 1000
   gpus: 4
   num_nodes: 1
-
+  ckpt_path: "/home/user/ckwan1/ml/new_checkpoints/eul_loss_1l1e/last.ckpt"
+  
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
   name: "eul_loss_1l1e"
+  id: "2jq9evfx"
+  resume: "must"

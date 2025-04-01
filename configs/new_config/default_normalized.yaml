@@ -11,8 +11,8 @@ model:
   blocks_per_layer: 2 # number of convolutional blocks in each layer
   init_dim: 3 # 3 for without density field in tensor
   reversed: False # if True, predict ZA from FastPM
-  normalized: True # if True, scale the input data by the scale factor
-  normalized_scale: 128.0 # scale factor for normalization
+  normalized: True # if True, normalize the input
+  normalized_scale: 128.0
   eul_loss: False # if True, use Eulerian loss
   eul_loss_scale: 1.0 # scale factor for Eulerian loss
   lag_loss_scale: 1.0 # scale factor for Lagrangian loss
@@ -33,4 +33,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "default"
+  name: "default_standardized"
