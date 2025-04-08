@@ -12,7 +12,7 @@ from score_vesde import VESDE, get_sigma_time, get_sample_time
 from torch_ema import ExponentialMovingAverage
 from ddim_sampler import DDIMSampler, DDPMSampler, extract
 from ddim_model import ddim_UNet3D
-from naf_net import NAFNet3D, NAFNet3D_base
+from naf_net import NAFNet3D, BaselineBlock, BaselineBlock_SCA, BaselineBlock_SG, NAFBlock3D
 from torchmetrics.image import PeakSignalNoiseRatio
 torch.backends.cudnn.benchmark = True
 VAE_list = ["VAE", "VAEwithRes", "MagVitVAE3D"]
@@ -41,6 +41,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 normalized: bool = False,
                 normalized_scale: float = None,
                 standardized: bool = False,
+                standardized_mean_1: float = None,
+                standardized_std_1: float = None,
+                standardized_mean_2: float = None,
+                standardized_std_2: float = None,
                 compressed: bool = False,
                 compression_type: str = 'arcsinh',
                 compression_factor: float = 24,
@@ -83,6 +87,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         self.save_hyperparameters(ignore=['kwargs'])  # This will save all init args except kwargs
         self.model_type = model
 
+        if reversed:
+            standardized_mean_1, standardized_mean_2 = standardized_mean_2, standardized_mean_1
+            standardized_std_1, standardized_std_2 = standardized_std_2, standardized_std_1
+
         if model == "default":
             self.model = Lpt2NbodyNet(BasicBlock,init_dim=self.hparams.init_dim)
         elif model == "UNet":
@@ -117,13 +125,17 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 self.model = srVAE3D(x_shape = (3, 32, 32, 32), y_shape = (3, 32, 32, 32), 
                             u_dim = self.hparams.srvae_udim, z_dim = self.hparams.srvae_zdim, prior=RealNVP)
         elif model == "NAFNet3D_base":
-                self.model = NAFNet3D_base(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
-                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand)
-
+                self.model = NAFNet3D(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
+                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand, block_type = BaselineBlock)
+        elif model == "NAFNet3D_base_SG":
+                self.model = NAFNet3D(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
+                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand, block_type = BaselineBlock_SG)
+        elif model == "NAFNet3D_base_SCA":
+                self.model = NAFNet3D(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
+                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand, block_type = BaselineBlock_SCA)
         elif model == "NAFNet3D":
                 self.model = NAFNet3D(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
-                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums) 
-
+                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand, block_type = NAFBlock3D)
         elif model == "ICdiffusion":
             self.model = UNet3DModel(
                     act_f=score_act_f,  # From "model.nonlinearity": "swish"
@@ -173,12 +185,6 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
     def forward(self, x, y=None):
         if y is not None:
             return self.model(x,y)
-        if self.hparams.normalized:
-            x, _ = self.normalize_displacement_field(x, self.hparams.normalized_scale)
-        if self.hparams.standardized:
-            x, _, _ = self.standardize_displacement_field(x)
-        if self.hparams.compressed:
-            x = self.range_compression(x, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
         return self.model(x)
 
     def on_fit_start(self):
@@ -194,8 +200,8 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             y, y_scale = self.normalize_displacement_field(y, self.hparams.normalized_scale)
 
         if self.hparams.standardized:
-            x, x_mean, x_std = self.standardize_displacement_field(x)
-            y, y_mean, y_std = self.standardize_displacement_field(y)
+            x, x_mean, x_std = self.standardize_displacement_field(x, self.hparams.standardized_mean_1, self.hparams.standardized_std_1)
+            y, y_mean, y_std = self.standardize_displacement_field(y, self.hparams.standardized_mean_2, self.hparams.standardized_std_2)
         
         if self.hparams.compressed:
             x = self.range_compression(x, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
@@ -366,8 +372,8 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             y, y_scale = self.normalize_displacement_field(y, self.hparams.normalized_scale)
             
         if self.hparams.standardized:
-            x, x_mean, x_std = self.standardize_displacement_field(x)
-            y, y_mean, y_std = self.standardize_displacement_field(y)
+            x, x_mean, x_std = self.standardize_displacement_field(x, self.hparams.standardized_mean_1, self.hparams.standardized_std_1)
+            y, y_mean, y_std = self.standardize_displacement_field(y, self.hparams.standardized_mean_2, self.hparams.standardized_std_2)
         
         if self.hparams.compressed:
             x = self.range_compression(x, div_factor = self.hparams.compression_factor, function = self.hparams.compression_factor)
@@ -534,6 +540,11 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             
+            if batch_idx == 0:
+                eul_y_hat, eul_y = lag2eul([y_hat, y])
+                eul_loss = self.criterion(eul_y_hat, eul_y)    
+                self.log('val_batch_eul_loss', eul_loss, on_step=True, on_epoch=False, logger=True, sync_dist=True) 
+
             if eul_enabled:
                 self.log('val_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             
@@ -611,7 +622,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         normalized = displacement / scale
         return normalized, scale
 
-    def standardize_displacement_field(self, data):
+    def standardize_displacement_field(self, data, mean=None,std=None):
         """
         Standardize a 3D displacement field tensor isotropically across all channels.
         
@@ -626,9 +637,11 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             std: Global std (computed if not provided)
         """
             # Compute global mean and std across all dimensions (B, C, D, H, W)
-        mean = data.mean()
-        std = data.std()
-        standardized_data = (data - mean) / (std + 1e-8)
+        if mean is None:
+            mean = data.mean()
+        if std is None:
+            std = data.std()
+        standardized_data = (data - mean) / (std)
         return standardized_data, mean, std
 
     def range_compression(self, sample, div_factor: float = 24, function: str = 'arcsinh', epsilon: float = 1e-8):

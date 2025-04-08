@@ -4,20 +4,25 @@ model:
   optimizer: 'AdamW' # ['Adam', 'AdamW']
   beta1: 0.9
   beta2: 0.9
-  lr_scheduler: 'Constant' # ['Constant', 'Cosine']
-  #lr_warmup: 1000 # needed if use cosine lr_scheduler
-  #lr_cosine_period: 24000 # match dataset_size/batch_size*max_epochs
-  model: 'NAFNet3D' # ['default', 'UNet', 'VAE']
+  lr_scheduler: 'Cosine' # ['Constant', 'Cosine']
+  lr_warmup: 1000 # needed if use cosine lr_scheduler
+  #lr_cosine_period: 400000 # match dataset_size/batch_size*max_epochs
+  model: 'NAFNet3D_base' # ['default', 'UNet', 'VAE']
   base_filters: 64 # base filter after first convolutional layer
   init_dim: 3 # 3 for without density field in tensor
   reversed: False # if True, predict ZA from FastPM
   normalized: False
+  compressed: True # if True, compress input data
+  compression_type: 'arcsinh' # ['arcsinh', 'tanh', 'sqrt']
+  compression_factor: 24 # compression factor
   eul_loss: False # if True, use Eulerian loss
   eul_loss_scale: 1.0 # scale factor for Eulerian loss
   lag_loss_scale: 1.0 # scale factor for Lagrangian loss
-  naf_middle_blk_num : 12
+  naf_middle_blk_num : 4
   naf_enc_blk_nums : [2, 2, 4, 8]
   naf_dec_blk_nums : [2, 2, 2, 2]
+  naf_dw_expand : 2
+  naf_ffn_expand : 2
 
 data:
   dataset_type: 'huggingface' # ['raw', 'huggingface']
@@ -35,4 +40,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "naf_denoise"
+  name: "naf_base_light_denoise_coslr_arcsinh"

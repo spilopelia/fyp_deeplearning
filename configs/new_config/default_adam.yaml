@@ -28,8 +28,10 @@ trainer:
   max_epochs: 1000
   gpus: 4
   num_nodes: 1
-
+  ckpt_path: "/home/user/ckwan1/ml/new_checkpoints/default_adam/last.ckpt"
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
   name: "default_adam"
+  id: "vkdusmw5"
+  resume: "must"

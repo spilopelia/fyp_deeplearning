@@ -15,7 +15,7 @@ model:
   eul_loss: False # if True, use Eulerian loss
   eul_loss_scale: 1.0 # scale factor for Eulerian loss
   lag_loss_scale: 1.0 # scale factor for Lagrangian loss
-  naf_middle_blk_num : 12
+  naf_middle_blk_num : 18
   naf_enc_blk_nums : [2, 2, 4, 8]
   naf_dec_blk_nums : [2, 2, 2, 2]
   naf_dw_expand : 2
@@ -30,13 +30,11 @@ data:
   density: False # if True, use density field in tensor
 
 trainer:
-  max_epochs: 2000
+  max_epochs: 1000
   gpus: 4
   num_nodes: 1
-  ckpt_path: "/home/user/ckwan1/ml/new_checkpoints/naf_base_denoise_coslr/last.ckpt"
+
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "naf_base_denoise_coslr"
-  id : "1nmn1u2m"
-  resume: "must"
+  name: "naf_base_large_denoise_coslr"

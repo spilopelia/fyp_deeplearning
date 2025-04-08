@@ -149,11 +149,11 @@ class FastPMPile(L.LightningDataModule):
         )
 
 class AugmentedDataset(Dataset):
-    def __init__(self, dataset, augment=False, density=False):
+    def __init__(self, dataset, augment=False, density=False, init_density=False):
         self.dataset = dataset
         self.augment = augment
         self.density = density
-
+        self.init_density = init_density
     def __len__(self):
         return len(self.dataset)
 
@@ -161,9 +161,14 @@ class AugmentedDataset(Dataset):
         dset = self.dataset[idx]
 
         if self.density:
-            density = dset['density']
-            LPT = density[2].unsqueeze(0).numpy().astype(np.float32)
-            Nbody = density[0].unsqueeze(0).numpy().astype(np.float32)
+            if self.init_density:
+                density = dset['density']
+                LPT = density[0].unsqueeze(0).numpy().astype(np.float32)
+                Nbody = density[1].unsqueeze(0).numpy().astype(np.float32)
+            else:
+                density = dset['density']
+                LPT = density[3].unsqueeze(0).numpy().astype(np.float32)
+                Nbody = density[1].unsqueeze(0).numpy().astype(np.float32)                
             if self.augment:
                 # Apply axis flips (no sign changes for density)
                 if np.random.rand() < .5:
@@ -257,6 +262,7 @@ class HuggingfaceLoader(L.LightningDataModule):  # use to load huggingface datas
         num_workers: int = 10,
         augment: bool = True,
         density: bool = False,
+        init_density: bool = False,
         **kwargs,
     ) -> None:
         """The `HuggingfaceLoader` class defines a LightningDataModule for
@@ -276,7 +282,9 @@ class HuggingfaceLoader(L.LightningDataModule):  # use to load huggingface datas
             augment (`bool`, *optional*, defaults to True):
                 Augment the dataset.
             density (`bool`, *optional*, defaults to True):
-                Stack density field in the tensor.                
+                Use density field.       
+            init_density (`bool`, *optional*, defaults to True):
+                Use init density field as one of the input.       
         """
         super().__init__()
         self.save_hyperparameters()
@@ -307,8 +315,8 @@ class HuggingfaceLoader(L.LightningDataModule):  # use to load huggingface datas
 
         self.dset = self.dset.with_format("torch")
 
-        self.train_dataset = AugmentedDataset(self.dset["train"], augment=self.hparams.augment, density=self.hparams.density)
-        self.val_dataset = AugmentedDataset(self.dset["test"], augment=False, density=self.hparams.density)
+        self.train_dataset = AugmentedDataset(self.dset["train"], augment=self.hparams.augment, density=self.hparams.density, init_density=self.hparams.init_density)
+        self.val_dataset = AugmentedDataset(self.dset["test"], augment=False, density=self.hparams.density, init_density=self.hparams.init_density)
 
     def train_dataloader(self):
         return DataLoader(

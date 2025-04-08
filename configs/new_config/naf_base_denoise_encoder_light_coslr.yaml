@@ -12,14 +12,11 @@ model:
   init_dim: 3 # 3 for without density field in tensor
   reversed: False # if True, predict ZA from FastPM
   normalized: False
-  compressed: True # if True, compress input data
-  compression_type: 'arcsinh' # ['arcsinh', 'tanh', 'sqrt']
-  compression_factor: 24 # compression factor
   eul_loss: False # if True, use Eulerian loss
   eul_loss_scale: 1.0 # scale factor for Eulerian loss
   lag_loss_scale: 1.0 # scale factor for Lagrangian loss
   naf_middle_blk_num : 12
-  naf_enc_blk_nums : [2, 2, 4, 8]
+  naf_enc_blk_nums : [2, 2, 2, 2]
   naf_dec_blk_nums : [2, 2, 2, 2]
   naf_dw_expand : 2
   naf_ffn_expand : 2
@@ -36,8 +33,7 @@ trainer:
   max_epochs: 1000
   gpus: 4
   num_nodes: 1
-
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "naf_base_denoise_coslr_arcsinh"
+  name: "naf_denoise_encoder_light_coslr"

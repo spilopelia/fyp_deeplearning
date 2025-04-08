@@ -7,7 +7,7 @@ model:
   lr_scheduler: 'Cosine' # ['Constant', 'Cosine']
   lr_warmup: 1000 # needed if use cosine lr_scheduler
   #lr_cosine_period: 400000 # match dataset_size/batch_size*max_epochs
-  model: 'NAFNet3D_base' # ['default', 'UNet', 'VAE']
+  model: 'NAFNet3D_base_SG' # ['default', 'UNet', 'VAE']
   base_filters: 64 # base filter after first convolutional layer
   init_dim: 3 # 3 for without density field in tensor
   reversed: False # if True, predict ZA from FastPM
@@ -30,13 +30,11 @@ data:
   density: False # if True, use density field in tensor
 
 trainer:
-  max_epochs: 2000
+  max_epochs: 1000
   gpus: 4
   num_nodes: 1
-  ckpt_path: "/home/user/ckwan1/ml/new_checkpoints/naf_base_denoise_coslr/last.ckpt"
+
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "naf_base_denoise_coslr"
-  id : "1nmn1u2m"
-  resume: "must"
+  name: "naf_base_sg_denoise_coslr"

@@ -13,8 +13,8 @@ model:
   reversed: False # if True, predict ZA from FastPM
   normalized: False
   eul_loss: True # if True, use Eulerian loss
-  eul_loss_scale: 1.0 # scale factor for Eulerian loss
-  lag_loss_scale: 3.0 # scale factor for Lagrangian loss
+  eul_loss_scale: 0.333 # scale factor for Eulerian loss
+  lag_loss_scale: 1.0 # scale factor for Lagrangian loss
   naf_middle_blk_num : 12
   naf_enc_blk_nums : [2, 2, 4, 8]
   naf_dec_blk_nums : [2, 2, 2, 2]
@@ -37,4 +37,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "naf_base_denoise_coslr_arcsinh"
+  name: "naf_base_denoise_coslr_1l0.3e"

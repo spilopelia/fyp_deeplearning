@@ -33,10 +33,10 @@ trainer:
   max_epochs: 1000
   gpus: 4
   num_nodes: 1
-  ckpt_path: "/home/user/ckwan1/ml/new_checkpoints/naf_base_denoise_coslr/last.ckpt"
+  ckpt_path: "/home/user/ckwan1/ml/new_checkpoints/naf_base_light_denoise_coslr/last.ckpt"
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "naf_base_denoise_coslr"
-  id : "1nmn1u2m"
+  name: "naf_base_light_denoise_coslr"
+  id: "15h8ltww"
   resume: "must"
