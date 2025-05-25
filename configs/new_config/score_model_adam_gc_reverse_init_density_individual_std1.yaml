@@ -7,7 +7,7 @@ model:
   #lr_warmup: 1000
   num_samples: 27000 # 30000 * spilt_ratio
   model: 'ICdiffusion' # ['default', 'UNet', 'VAE']
-  reversed: False # if True, predict ZA from FastPM
+  reversed: True # if True, FastPM as input
   diffusion_noise_sigma: 0.1
   diffusion_sigma_min: 0.01
   diffusion_sigma_max: 100.0
@@ -24,10 +24,9 @@ model:
   ema: True
   ema_rate: 0.999
   standardized: True # if True, use standardized input and output
-  standardized_mean_1: 1.0
-  standardized_std_1: 0.01672477265
-  standardized_mean_2: 1.0
-  standardized_std_2: 1.77335219661
+  standardized_mean_1: 1.0 # mean of another field
+  standardized_mean_2: 1.0 # mean of the FastPM
+  standardized_std_2: 1.77335219661 # std of the FastPM
 data:
   dataset_type: 'huggingface' # ['raw', 'huggingface']
   dataset_path: '/home/user/ckwan1/ml/hfdataset'
@@ -46,4 +45,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "score_model_init_density"
+  name: "score_model_adam_gc_reverse_init_density_individual_std1"

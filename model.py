@@ -31,6 +31,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 num_samples: int = 30000,
                 batch_size: int = 128,
                 max_epochs: int = 500,
+                used_density: bool = False,
                 model: str = 'default',
                 num_layers: int = 4, 
                 base_filters: int = 64, 
@@ -86,7 +87,12 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
         self.save_hyperparameters(ignore=['kwargs'])  # This will save all init args except kwargs
         self.model_type = model
-
+        if not used_density:
+            self.train_epoch_lag_loss = 'train_epoch_lag_loss'
+            self.val_epoch_lag_loss = 'val_epoch_lag_loss'
+        else:
+            self.train_epoch_lag_loss = 'train_epoch_eul_loss'
+            self.val_epoch_lag_loss = 'val_epoch_eul_loss'
         if reversed:
             standardized_mean_1, standardized_mean_2 = standardized_mean_2, standardized_mean_1
             standardized_std_1, standardized_std_2 = standardized_std_2, standardized_std_1
@@ -317,14 +323,17 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             kl_enabled = (self.model_type in VAE_list) and self.hparams.kl_loss
 
             # Apply lagrangian scaling if either auxiliary loss is active
-            if eul_enabled or kl_enabled:
+            if kl_enabled:
                 train_loss = lag_loss * self.hparams.lag_loss_scale
+
+            if eul_enabled:
+                train_loss = torch.log(lag_loss) * self.hparams.lag_loss_scale
 
             # Euler loss component
             if eul_enabled:
                 eul_y_hat, eul_y = lag2eul([y_hat, y])
                 eul_loss = self.criterion(eul_y_hat, eul_y)
-                train_loss += eul_loss * self.hparams.eul_loss_scale
+                train_loss += torch.log(eul_loss) * self.hparams.eul_loss_scale
 
             # KL divergence component
             if kl_enabled:
@@ -353,7 +362,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
             self.log('train_batch_loss', train_loss, on_step=True, on_epoch=False, logger=True, sync_dist=True)
             self.log('train_epoch_loss', train_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('train_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log(self.train_epoch_lag_loss, lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             
             if eul_enabled:
                 self.log('train_epoch_eul_loss', eul_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
@@ -433,7 +442,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             if self.trainer.current_epoch % 1 == 0 and batch_idx == 0:
                 x = x[0:1]
                 y = y[0:1]
-                sampled_ic, _ = self.sample_initial_condition(x)
+                _, sampled_ic = self.sample_initial_condition(x)
 
                 if self.hparams.normalized:
                     y = y * y_scale
@@ -450,7 +459,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 lag_loss = self.criterion(sampled_ic, y)
                 val_psnr = self.psnr(sampled_ic, y)
                 self.log('val_epoch_psnr', val_psnr, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-                self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+                self.log(self.val_epoch_lag_loss, lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
                 return sampled_ic
             return None
         elif self.model_type == "DDIM":
@@ -490,7 +499,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 lag_loss = self.criterion(sampled_ic, y)
                 val_psnr = self.psnr(sampled_ic, y)
                 self.log('val_epoch_psnr', val_psnr, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-                self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+                self.log(self.val_epoch_lag_loss, lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
                 return sampled_ic
             return None            
         else:
@@ -517,14 +526,17 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             kl_enabled = (self.model_type in VAE_list) and self.hparams.kl_loss
 
             # Apply lagrangian scaling if either auxiliary loss is active
-            if eul_enabled or kl_enabled:
+            if kl_enabled:
                 val_loss = lag_loss * self.hparams.lag_loss_scale
+
+            if eul_enabled:
+                val_loss = torch.log(lag_loss) * self.hparams.lag_loss_scale
 
             # Euler loss component
             if eul_enabled:
                 eul_y_hat, eul_y = lag2eul([y_hat, y])
                 eul_loss = self.criterion(eul_y_hat, eul_y)
-                val_loss += eul_loss * self.hparams.eul_loss_scale
+                val_loss += torch.log(eul_loss) * self.hparams.eul_loss_scale
 
             # KL divergence component
             if kl_enabled:
@@ -538,9 +550,9 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.log('val_epoch_psnr', val_psnr, on_step=False, on_epoch=True, logger=True, sync_dist=True)
 
             self.log('val_epoch_loss', val_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
-            self.log('val_epoch_lag_loss', lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
+            self.log(self.val_epoch_lag_loss, lag_loss, on_step=False, on_epoch=True, logger=True, sync_dist=True)
             
-            if batch_idx == 0:
+            if batch_idx == 0 and not self.hparams.used_density:
                 eul_y_hat, eul_y = lag2eul([y_hat, y])
                 eul_loss = self.criterion(eul_y_hat, eul_y)    
                 self.log('val_batch_eul_loss', eul_loss, on_step=True, on_epoch=False, logger=True, sync_dist=True) 
@@ -677,7 +689,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 t_vec = torch.ones(1, device=self.device) * t
                 model_output = self.model(torch.cat([x, input_data], dim=1), t_vec)
                 x, x_mean = self.sde.update_fn(x, t_vec, model_output=model_output)
-            return x_mean
+            return x, x_mean
         elif self.model_type == "DDIM":
             if diffusion_sampler == 'DDIM':
                 sampler = DDIMSampler(self.model, beta=self.hparams.ddim_beta, T=self.hparams.diffusion_num_scales)

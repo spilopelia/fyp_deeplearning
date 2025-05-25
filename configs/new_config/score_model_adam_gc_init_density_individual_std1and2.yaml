@@ -25,9 +25,8 @@ model:
   ema_rate: 0.999
   standardized: True # if True, use standardized input and output
   standardized_mean_1: 1.0
-  standardized_std_1: 0.01672477265
   standardized_mean_2: 1.0
-  standardized_std_2: 1.77335219661
+
 data:
   dataset_type: 'huggingface' # ['raw', 'huggingface']
   dataset_path: '/home/user/ckwan1/ml/hfdataset'
@@ -46,4 +45,4 @@ trainer:
 wandb:
   project: "fyp"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "score_model_init_density"
+  name: "score_model_adam_gc_init_density_individual_std1and2"

@@ -104,10 +104,11 @@ class SlicePlotCallback(pl.Callback):
         target_array = target_tensor[0, :, :, :, :].detach().cpu().numpy()
         prediction_array = prediction_tensor[0, :, :, :, :].detach().cpu().numpy()
         direction = ['x', 'y', 'z']
-
+        cmap = "coolwarm"
         # Select the slice along the specified axis
         if axis > input_array.shape[0]:
             axis=0
+            cmap = "viridis"
         input_slice = input_array[axis, :, :, slice_index]
         target_slice = target_array[axis, :, :, slice_index]
         prediction_slice = prediction_array[axis, :, :, slice_index]
@@ -123,17 +124,17 @@ class SlicePlotCallback(pl.Callback):
         fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
         # Plot input slice
-        im0 = axes[0].imshow(input_slice, cmap='coolwarm', vmin=-input_max, vmax=input_max)
+        im0 = axes[0].imshow(input_slice, cmap=cmap, vmin=-input_max, vmax=input_max)
         axes[0].set_title(f'ZA Slice (direction={direction[axis]}, z_index={slice_index})')
         plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
 
         # Plot target slice
-        im1 = axes[1].imshow(target_slice, cmap='coolwarm', vmin=-target_max, vmax=target_max)
+        im1 = axes[1].imshow(target_slice, cmap=cmap, vmin=-target_max, vmax=target_max)
         axes[1].set_title(f'FastPM Slice (direction={direction[axis]}, z_index={slice_index})')
         plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
         # Plot prediction slice
-        im2 = axes[2].imshow(prediction_slice, cmap='coolwarm', vmin=-prediction_max, vmax=prediction_max)
+        im2 = axes[2].imshow(prediction_slice, cmap=cmap, vmin=-prediction_max, vmax=prediction_max)
         axes[2].set_title(f'Prediction Slice (direction={direction[axis]}, z_index={slice_index})')
         plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
 
@@ -167,28 +168,6 @@ class SlicePlotCallback(pl.Callback):
         prediction_tensor = outputs  # Assuming the output of validation_step is the prediction
 
         if outputs is not None and batch_idx == 0:
-            #self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=0, slice_index=16)
-            #self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=1, slice_index=16)
             self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=2, slice_index=16)
-            #self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=0, slice_index=16)
-            #self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=1, slice_index=16)
             self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=2, slice_index=16)
             
-    def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        """
-        This method is called at the end of every validation batch.
-        
-        Args:
-        - trainer: The PyTorch Lightning trainer.
-        - pl_module: The LightningModule (your model).
-        - outputs: The outputs from the validation step.
-        - batch: The current batch (input, target).
-        - batch_idx: The index of the current batch.
-        - dataloader_idx: The index of the dataloader if multiple dataloaders are used.
-        """
-        input_tensor, target_tensor = batch
-        prediction_tensor = outputs  # Assuming the output of validation_step is the prediction
-
-        if outputs is not None and batch_idx == 0:
-            self.plot_slices_and_residuals(trainer, input_tensor, target_tensor, prediction_tensor, batch_idx, axis=2, slice_index=16)
-            self.look_dis_slice(trainer, net1=target_tensor, net2=input_tensor, net3=prediction_tensor, batch_idx=batch_idx, axis=2, slice_index=16)

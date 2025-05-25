@@ -1,6 +1,6 @@
 model:
   learning_rate: 2.0e-4
-  weight_decay: 1.0e-4
+  weight_decay: 0
   optimizer: 'Adam' # ['Adam', 'AdamW']
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
   #lr_scheduler: 'Cosine'

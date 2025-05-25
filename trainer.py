@@ -35,6 +35,7 @@ def main():
     config = load_config(args.config)
     config['model']['batch_size'] = config['data']['batch_size']
     config['model']['max_epochs'] = config['trainer']['max_epochs']
+    config['model']['used_density'] = config['data']['density']
     if args.num_workers is not None:
         config['data']['num_workers'] = args.num_workers  # Update the workers count in the config
 
